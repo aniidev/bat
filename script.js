@@ -5,13 +5,65 @@
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.physicallyCorrectLights = true;
 document.body.appendChild(renderer.domElement);
 
 const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
 
-const camera = new THREE.PerspectiveCamera(80, innerWidth / innerHeight, 0.05, 200);
-camera.position.set(0, 0, 0);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.05, 200);
+
+// World-space player + bat (third person — camera chases, does not sit on the bat).
+const player = new THREE.Group();
+player.position.set(0, 0, 0);
+scene.add(player);
+
+// Lights for the GLTF bat (cave uses ShaderMaterial and ignores these).
+scene.add(new THREE.HemisphereLight(0x4a6a8a, 0x0a0612, 0.45));
+const batKey = new THREE.PointLight(0xc8e8ff, 0.85, 22, 2);
+batKey.position.set(0, 0.4, 0.15);
+player.add(batKey);
+
+let batMixer = null;
+const batMount = new THREE.Group();
+batMount.rotation.y = Math.PI * 0.5;
+player.add(batMount);
+
+new THREE.GLTFLoader().load(
+  'scene.gltf',
+  (gltf) => {
+    const bat = gltf.scene;
+    bat.traverse((o) => {
+      if (!o.isMesh) return;
+      o.frustumCulled = false;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (let i = 0; i < mats.length; i++) {
+        const mat = mats[i];
+        if (mat && mat.isMeshStandardMaterial) {
+          mat.side = THREE.DoubleSide;
+          mat.envMapIntensity = 0.45;
+        }
+      }
+    });
+    const box = new THREE.Box3().setFromObject(bat);
+    const c = new THREE.Vector3();
+    box.getCenter(c);
+    bat.position.sub(c);
+    const box2 = new THREE.Box3().setFromObject(bat);
+    const sz = new THREE.Vector3();
+    box2.getSize(sz);
+    const mx = Math.max(sz.x, sz.y, sz.z);
+    if (mx > 0) bat.scale.setScalar(1.75 / mx);
+    batMount.add(bat);
+    if (gltf.animations && gltf.animations.length) {
+      batMixer = new THREE.AnimationMixer(bat);
+      batMixer.clipAction(gltf.animations[0]).play();
+    }
+  },
+  undefined,
+  (err) => console.error('scene.gltf load error:', err)
+);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ECHOLOCATION SHADER
@@ -229,7 +281,7 @@ function emitSonar() {
   lastSonarTime = now;
   sonarCharge   = 0;
 
-  const origin = camera.position.clone();
+  const origin = player.position.clone();
 
   // Two visible rings: horizontal (XZ) + one tilted with camera look
   const hRingMat = new THREE.LineBasicMaterial({ color: 0x00bbff, transparent: true, opacity: 0.85 });
@@ -301,6 +353,24 @@ document.addEventListener('mousemove', e => {
 const clock = new THREE.Clock();
 let flapPhase = 0;
 
+const _camEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _camForward = new THREE.Vector3();
+const _camLook = new THREE.Vector3();
+const CAM_DIST = 6.2;
+const CAM_HEIGHT = 1.35;
+const CAM_LOOK_AHEAD = 1.35;
+
+function updateThirdPersonCamera() {
+  _camEuler.set(pitch, yaw, 0);
+  _camForward.set(0, 0, -1).applyEuler(_camEuler);
+  camera.position.copy(player.position).addScaledVector(_camForward, -CAM_DIST);
+  camera.position.y += CAM_HEIGHT;
+  _camLook.copy(player.position).addScaledVector(_camForward, CAM_LOOK_AHEAD);
+  _camLook.y += 0.42;
+  camera.up.set(0, 1, 0);
+  camera.lookAt(_camLook);
+}
+
 function updatePlayer(dt) {
   const fast  = keys['ShiftLeft'] || keys['ShiftRight'];
   const speed = fast ? 15 : 8;
@@ -316,23 +386,23 @@ function updatePlayer(dt) {
 
   const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
   if (len > 0) {
-    camera.position.x += (dx/len) * speed * dt;
-    camera.position.y += (dy/len) * speed * dt;
-    camera.position.z += (dz/len) * speed * dt;
+    player.position.x += (dx/len) * speed * dt;
+    player.position.y += (dy/len) * speed * dt;
+    player.position.z += (dz/len) * speed * dt;
   }
 
   // Wing-flap bob
   flapPhase += dt * (len > 0 ? 5.5 : 2.5);
-  camera.position.y += Math.sin(flapPhase) * (len > 0 ? 0.014 : 0.006);
+  player.position.y += Math.sin(flapPhase) * (len > 0 ? 0.014 : 0.006);
 
   // Clamp to cave bounds
-  camera.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, camera.position.x));
-  camera.position.y = Math.max(-CAVE_H+1,    Math.min(CAVE_H-1,    camera.position.y));
-  camera.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, camera.position.z));
+  player.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.x));
+  player.position.y = Math.max(-CAVE_H+1,    Math.min(CAVE_H-1,    player.position.y));
+  player.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.z));
 
-  camera.rotation.order = 'YXZ';
-  camera.rotation.y = yaw;
-  camera.rotation.x = pitch;
+  player.rotation.order = 'YXZ';
+  player.rotation.y = yaw;
+  player.rotation.x = pitch * 0.22;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -343,6 +413,9 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   if (gameStarted) updatePlayer(dt);
+  updateThirdPersonCamera();
+
+  if (batMixer) batMixer.update(dt);
 
   // Sonar charge bar
   sonarCharge = Math.min(1, sonarCharge + dt / SONAR_COOLDOWN);

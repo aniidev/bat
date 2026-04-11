@@ -48,3 +48,17 @@ canvas { display: block; }
 #overlay .go { margin-top: 28px; font-size: 0.95rem; animation: blink 1.4s ease-in-out infinite; }
 
 @keyframes blink { 0%,100%{opacity:0.3} 50%{opacity:1} }
+
+#model-credit {
+  position: fixed;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: monospace;
+  font-size: 0.62rem;
+  color: #2a5a70;
+  opacity: 0.55;
+  pointer-events: none;
+  letter-spacing: 0.4px;
+  z-index: 2;
+}
