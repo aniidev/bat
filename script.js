@@ -126,13 +126,13 @@ const fragShader = /* glsl */`
 
       if (behind > 0.0 && behind < TRAIL) {
         float t     = behind / TRAIL;            // 0=wavefront  1=trail end
-        float fade  = (1.0 - t) * (1.0 - t);   // quadratic ease-out
+        float fade  = pow(1.0 - t, 4.5);   // quadratic ease-out
 
         // Leading-edge "glow shock" — exponential falloff just behind front
-        float front = exp(-behind * 0.55);
+        float front = exp(-behind * 1.2);
 
         totalGrid  = max(totalGrid,  grid * fade);
-        totalFill  = max(totalFill,  fade * 0.07);   // subtle fill between lines
+        totalFill  = max(totalFill,  fade * 0.19);   // subtle fill between lines
         totalFront = max(totalFront, front);
       }
     }
@@ -288,16 +288,82 @@ function addMesh(geo, mat, pos, rotX, rotY) {
   return m;
 }
 
-// Floor & ceiling — subdivided so fragments can vary across the surface
-addMesh(new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_HALF*2, 40, 40), null, [0, -CAVE_H, 0], -Math.PI/2);
-addMesh(new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_HALF*2, 40, 40), null, [0,  CAVE_H, 0],  Math.PI/2);
+// ── Noise helpers for organic cave surfaces ───────────────────────
+function _cavHash(ix, iz) {
+  let s = (ix * 374761393 + iz * 1009) | 0;
+  s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+  return (s >>> 0) / 4294967296;
+}
+function _caveNoise2(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const ux = fx*fx*(3-2*fx), uz = fz*fz*(3-2*fz);
+  const a = _cavHash(ix,   iz  ), b = _cavHash(ix+1, iz  );
+  const c = _cavHash(ix,   iz+1), d = _cavHash(ix+1, iz+1);
+  return a + (b-a)*ux + (c-a)*uz + (d-b-c+a)*ux*uz;
+}
+function _caveFbm(x, z, oct) {
+  let v=0, amp=0.5, freq=1, tot=0;
+  for (let o=0; o<oct; o++) {
+    v += _caveNoise2(x*freq, z*freq)*amp;
+    tot+=amp; amp*=0.5; freq*=2.1;
+  }
+  return v/tot;
+}
+function _displaceZ(geo, fn) {
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setZ(i, fn(pos.getX(i), pos.getY(i)));
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+}
 
-// Walls
-const wallGeo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_H*2, 30, 12);
-addMesh(wallGeo, null, [0, 0, -CAVE_HALF], 0, 0);
-addMesh(wallGeo, null, [0, 0,  CAVE_HALF], 0, Math.PI);
-addMesh(wallGeo, null, [-CAVE_HALF, 0, 0], 0,  Math.PI/2);
-addMesh(wallGeo, null, [ CAVE_HALF, 0, 0], 0, -Math.PI/2);
+// ── Three-scale surface displacement (regional + local + fine) ────
+// Regional scale gives dramatic altitude differences across the cave
+// (one corner of the floor can be 4–5 m higher than the opposite corner).
+function _floorDisp(wx, wz) {
+  const reg  = _caveFbm(wx*0.016 + 3.7,  wz*0.016 + 9.1,  2); // whole-cave tilt  (0-1)
+  const mid  = _caveFbm(wx*0.058 + 7.3,  wz*0.058 + 2.4,  3); // ridges/bowls     (0-1)
+  const fine = _caveFbm(wx*0.22  + 3.7,  wz*0.22  + 9.1,  3); // rocky texture    (0-1)
+  return reg * 4.5 + mid * 2.2 + fine * 1.0;   // 0 – 7.7 m above base
+}
+function _ceilDisp(wx, wz) {
+  const reg  = _caveFbm(wx*0.016 + 11.3, wz*0.016 + 5.8,  2);
+  const mid  = _caveFbm(wx*0.058 + 15.7, wz*0.058 + 8.2,  3);
+  const fine = _caveFbm(wx*0.22  + 11.3, wz*0.22  + 5.8,  3);
+  return reg * 4.0 + mid * 1.8 + fine * 0.8;   // 0 – 6.6 m below base
+}
+
+function getFloorY(wx, wz) { return -CAVE_H + _floorDisp(wx, wz); }
+function getCeilY (wx, wz) { return  CAVE_H - _ceilDisp(wx, wz); }
+
+// Floor (130×130 verts)
+const floorGeo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_HALF*2, 130, 130);
+_displaceZ(floorGeo, (lx, ly) => _floorDisp(lx, -ly));
+addMesh(floorGeo, null, [0, -CAVE_H, 0], -Math.PI/2);
+
+// Ceiling (130×130 verts)
+const ceilGeo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_HALF*2, 130, 130);
+_displaceZ(ceilGeo, (lx, ly) => _ceilDisp(lx, ly));
+addMesh(ceilGeo, null, [0, CAVE_H, 0], Math.PI/2);
+
+// Walls — anisotropic scalloped displacement (wider freq horizontally, mimicking
+// water erosion channels).  Three scales: large rock face → medium scallop → fine surface.
+function _rockWallGeo(wS, hS, sx, sz) {
+  const geo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_H*2, wS, hS);
+  _displaceZ(geo, (u, v) => {
+    const large   = _caveFbm(u*0.062 + sx,      v*0.045 + sz,      3); // big rock faces
+    const scallop = _caveFbm(u*0.21  + sx+5.1,  v*0.32  + sz+5.1,  3); // water scallops (taller than wide)
+    const fine    = _caveFbm(u*0.56  + sx+9.3,  v*0.56  + sz+9.3,  2); // fine texture
+    return large * 7.0 + scallop * 3.2 + fine * 0.75;
+  });
+  return geo;
+}
+addMesh(_rockWallGeo(80, 32, 0.0, 0.0), null, [0, 0, -CAVE_HALF], 0, 0);
+addMesh(_rockWallGeo(80, 32, 5.3, 2.1), null, [0, 0,  CAVE_HALF], 0, Math.PI);
+addMesh(_rockWallGeo(80, 32, 1.7, 7.4), null, [-CAVE_HALF, 0, 0], 0,  Math.PI/2);
+addMesh(_rockWallGeo(80, 32, 9.2, 3.8), null, [ CAVE_HALF, 0, 0], 0, -Math.PI/2);
 
 // Seeded RNG (deterministic layout every time)
 const rng = (() => {
@@ -305,76 +371,216 @@ const rng = (() => {
   return () => { s ^= s<<13; s ^= s>>17; s ^= s<<5; return (s>>>0)/4294967296; };
 })();
 
-/**
- * Analytic colliders matched to primitive geometry (not scene bounding spheres).
- * lethal: red = instant death on hull overlap; blue = push only.
- */
 const obstacleColliders = [];
 
-// Stalactites & stalagmites (~40% red lethal, rest blue safe — same grid shaders)
-for (let i = 0; i < 90; i++) {
-  const x = (rng()-0.5)*(CAVE_HALF*2 - 4);
-  const z = (rng()-0.5)*(CAVE_HALF*2 - 4);
-  if (Math.abs(x) < 3 && Math.abs(z) < 3) continue;
-
-  const h    = 1.2 + rng() * 5.5;
-  const base = 0.08 + rng() * 0.5;
-  const top  = rng() > 0.5;   // stalactite from ceiling
-
-  const lethal = rng() < 0.4;
-  const geo = new THREE.CylinderGeometry(top ? 0.02 : base, top ? base : 0.02, h, 6);
-  const m   = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
-  const yC  = top ? CAVE_H - h * 0.5 : -CAVE_H + h * 0.5;
-  m.position.set(x, yC, z);
+// ── Shared helper: spawn one stalactite (fromCeil=true) or stalagmite (false) ──
+function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
+  const tipR = lethal ? 0.015 + rng()*0.03 : 0.03 + rng()*0.09;
+  const geo  = new THREE.CylinderGeometry(
+    fromCeil ? tipR : baseR,
+    fromCeil ? baseR : tipR,
+    h, 6
+  );
+  const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+  // Anchor to the actual displaced surface so nothing floats or buries
+  const surfY = fromCeil
+    ? getCeilY(x, z)  - h * 0.5
+    : getFloorY(x, z) + h * 0.5;
+  m.position.set(x, surfY, z);
   scene.add(m);
-  const rCyl = Math.max(top ? base : 0.02, top ? 0.02 : base) * 0.96;
-  const ya = yC - h * 0.5;
-  const yb = yC + h * 0.5;
   obstacleColliders.push({
     type: 'capsule',
-    a: new THREE.Vector3(x, ya, z),
-    b: new THREE.Vector3(x, yb, z),
-    radius: rCyl,
-    lethal
+    a: new THREE.Vector3(x, surfY - h*0.5, z),
+    b: new THREE.Vector3(x, surfY + h*0.5, z),
+    radius: Math.max(tipR, baseR) * 0.92, lethal
   });
 }
 
-// Boulders / rocks (polyhedron centered on mesh.position; circumradius ≈ s)
-for (let i = 0; i < 55; i++) {
-  const s = 0.25 + rng()*1.9;
-  const x = (rng()-0.5)*(CAVE_HALF*2-4);
-  const z = (rng()-0.5)*(CAVE_HALF*2-4);
-  const lethal = rng() < 0.4;
+// ── DRIP ZONES — the primary speleothem system ────────────────────
+// Limestone caves form stalactites where water seeps through cracks.
+// Drips fall directly below, growing matching stalagmites.
+// Over thousands of years some pairs merge into columns (hourglass shape).
+for (let di = 0; di < 9; di++) {
+  const zx     = (rng()-0.5) * (CAVE_HALF*2 - 18);
+  const zz     = (rng()-0.5) * (CAVE_HALF*2 - 18);
+  const spread = 4 + rng() * 10;
+  const count  = 4 + Math.floor(rng() * 14);
+
+  for (let i = 0; i < count; i++) {
+    const angle = rng() * Math.PI * 2;
+    const rad   = spread * Math.sqrt(rng());  // sqrt = uniform disk distribution
+    const x     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, zx + Math.cos(angle)*rad));
+    const z     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, zz + Math.sin(angle)*rad));
+
+    // Stalactite from ceiling — ~55% lethal (pointed spikes are the main danger)
+    const h     = 1.4 + rng() * 5.8;
+    const base  = 0.06 + rng() * 0.52;
+    _spawnTite(x, z, true,  h, base, rng() < 0.55);
+
+    // Matching stalagmite rising below from the drip (~75% form one, ~50% lethal)
+    if (rng() > 0.25) {
+      const mh = h * (0.3 + rng() * 0.8);
+      const mb = base * (0.5 + rng() * 0.9);
+      _spawnTite(x + (rng()-0.5)*0.5, z + (rng()-0.5)*0.5, false, mh, mb, rng() < 0.50);
+    }
+  }
+
+  // 0–2 columns per zone — anchored to actual floor/ceiling surfaces
+  const colCount = Math.floor(rng() * 2.6);
+  for (let ci = 0; ci < colCount; ci++) {
+    const cx    = Math.max(-CAVE_HALF+3, Math.min(CAVE_HALF-3, zx + (rng()-0.5)*spread*0.55));
+    const cz    = Math.max(-CAVE_HALF+3, Math.min(CAVE_HALF-3, zz + (rng()-0.5)*spread*0.55));
+    const midR  = 0.10 + rng() * 0.28;
+    const botR  = midR * (1.7 + rng() * 1.3);
+    const topR  = midR * (1.5 + rng() * 1.0);
+    const split = 0.35 + rng() * 0.30;
+
+    // Span actual displaced floor → ceiling at this spot
+    const colFloorY = getFloorY(cx, cz);
+    const colCeilY  = getCeilY(cx, cz);
+    const colH      = Math.max(0.5, colCeilY - colFloorY);
+
+    const botH = colH * split;
+    const gBot = new THREE.CylinderGeometry(midR, botR, botH, 8);
+    const mBot = new THREE.Mesh(gBot, caveMat);
+    mBot.position.set(cx, colFloorY + botH*0.5, cz);
+    scene.add(mBot);
+
+    const topH = colH * (1 - split);
+    const gTop = new THREE.CylinderGeometry(topR, midR, topH, 8);
+    const mTop = new THREE.Mesh(gTop, caveMat);
+    mTop.position.set(cx, colCeilY - topH*0.5, cz);
+    scene.add(mTop);
+
+    obstacleColliders.push({
+      type: 'capsule',
+      a: new THREE.Vector3(cx, colFloorY, cz),
+      b: new THREE.Vector3(cx, colCeilY,  cz),
+      radius: Math.max(botR, topR) * 0.88, lethal: false
+    });
+  }
+}
+
+// ── BREAKDOWN FIELDS — collapsed ceiling zones ────────────────────
+// Where the cave ceiling has fractured over time, large angular blocks
+// pile up on the floor.  Concentrated in 4 zones rather than scattered.
+for (let fi = 0; fi < 4; fi++) {
+  const bfx    = (rng()-0.5) * (CAVE_HALF*2 - 14);
+  const bfz    = (rng()-0.5) * (CAVE_HALF*2 - 14);
+  const bcount = 5 + Math.floor(rng() * 10);
+
+  for (let i = 0; i < bcount; i++) {
+    const angle = rng() * Math.PI * 2;
+    const rad   = rng() * 7;
+    const x     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, bfx + Math.cos(angle)*rad));
+    const z     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, bfz + Math.sin(angle)*rad));
+    const s     = 0.4 + rng() * 2.8;
+    const geo   = rng() > 0.45
+      ? new THREE.DodecahedronGeometry(s, 0)
+      : new THREE.IcosahedronGeometry(s, 0);
+    // Lethal probability scales with sharpness: small shards nearly always lethal
+    const lethal = rng() < (s < 0.8 ? 0.85 : s < 1.5 ? 0.55 : 0.25);
+    const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+    const yB = getFloorY(x, z) + s * 0.52;   // sit on actual displaced floor
+    m.position.set(x, yB, z);
+    m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+    scene.add(m);
+    obstacleColliders.push({
+      type: 'sphere',
+      center: new THREE.Vector3(x, yB, z),
+      radius: s * 0.85, lethal
+    });
+  }
+}
+
+// ── SCATTERED FLOOR BOULDERS ──────────────────────────────────────
+for (let i = 0; i < 30; i++) {
+  const s = 0.22 + rng() * 1.5;
+  const x = (rng()-0.5) * (CAVE_HALF*2 - 4);
+  const z = (rng()-0.5) * (CAVE_HALF*2 - 4);
+  const lethal = rng() < 0.55;
   const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), lethal ? obstacleCaveMat : caveMat);
-  const yB = -CAVE_H + s*0.55;
+  const yB = getFloorY(x, z) + s * 0.55;
   m.position.set(x, yB, z);
   m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
   scene.add(m);
   obstacleColliders.push({
     type: 'sphere',
     center: new THREE.Vector3(x, yB, z),
-    radius: s * 0.9,
-    lethal
+    radius: s * 0.9, lethal
   });
 }
 
-// Mid-air crystal clusters (octahedron radius s from center)
-for (let i = 0; i < 25; i++) {
-  const s = 0.15 + rng()*0.7;
-  const lethal = rng() < 0.4;
-  const m = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), lethal ? obstacleCaveMat : caveMat);
-  const ox = (rng()-0.5)*(CAVE_HALF*2-6);
-  const oy = (rng()-0.5)*(CAVE_H*1.6);
-  const oz = (rng()-0.5)*(CAVE_HALF*2-6);
-  m.position.set(ox, oy, oz);
-  m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+// ── LARGE PILLARS with satellite cluster ─────────────────────────
+for (let i = 0; i < 8; i++) {
+  const x = (rng()-0.5) * (CAVE_HALF*2 - 16);
+  const z = (rng()-0.5) * (CAVE_HALF*2 - 16);
+  if (Math.abs(x) < 7 && Math.abs(z) < 7) { i--; continue; }
+
+  const baseR = 1.0 + rng() * 1.8;
+  const topR  = baseR * (0.06 + rng() * 0.28);
+  const h     = CAVE_H * (1.4 + rng() * 0.6);
+  const yC    = -CAVE_H + h * 0.5;
+  const geo   = new THREE.CylinderGeometry(topR, baseR, h, 10);
+  const m     = new THREE.Mesh(geo, caveMat);
+  m.position.set(x, yC, z);
+  m.rotation.y = rng() * Math.PI;
   scene.add(m);
   obstacleColliders.push({
-    type: 'sphere',
-    center: new THREE.Vector3(ox, oy, oz),
-    radius: s * 0.9,
-    lethal
+    type: 'capsule',
+    a: new THREE.Vector3(x, yC - h*0.5, z),
+    b: new THREE.Vector3(x, yC + h*0.5, z),
+    radius: baseR * 0.88, lethal: false
   });
+
+  const satCount = 3 + Math.floor(rng() * 4);
+  for (let k = 0; k < satCount; k++) {
+    const ang  = (k / satCount) * Math.PI * 2 + rng() * 0.9;
+    const dist = baseR * 1.15 + rng() * 2.8;
+    const sx   = x + Math.cos(ang) * dist;
+    const sz   = z + Math.sin(ang) * dist;
+    const sh   = h * (0.10 + rng() * 0.60);
+    const sbr  = baseR * (0.10 + rng() * 0.42);
+    const str  = sbr * (0.03 + rng() * 0.22);
+    const syC  = -CAVE_H + sh * 0.5;
+    const sm   = new THREE.Mesh(new THREE.CylinderGeometry(str, sbr, sh, 7), caveMat);
+    sm.position.set(sx, syC, sz);
+    sm.rotation.y = rng() * Math.PI;
+    scene.add(sm);
+    obstacleColliders.push({
+      type: 'capsule',
+      a: new THREE.Vector3(sx, syC - sh*0.5, sz),
+      b: new THREE.Vector3(sx, syC + sh*0.5, sz),
+      radius: sbr * 0.88, lethal: false
+    });
+  }
+}
+
+// ── CAVE CURTAINS (drapery) ───────────────────────────────────────
+// Thin rippled rock sheets that hang from ceiling overhangs.  In real
+// limestone caves these form where water seeps along a sloped surface.
+// DoubleSide so they're visible when flying through or around them.
+const curtainMat = new THREE.ShaderMaterial({
+  vertexShader: vertShader, fragmentShader: fragShader,
+  uniforms: { uPulses: { value: uPulseVec4 }, uCamPos: { value: camera.position } },
+  side: THREE.DoubleSide
+});
+for (let i = 0; i < 8; i++) {
+  const cx    = (rng()-0.5) * (CAVE_HALF*2 - 12);
+  const cz    = (rng()-0.5) * (CAVE_HALF*2 - 12);
+  const cw    = 1.8 + rng() * 6.5;
+  const ch    = 1.0 + rng() * 4.5;
+  const cAng  = rng() * Math.PI;
+  const cgeo  = new THREE.PlaneGeometry(cw, ch, Math.max(4, cw*3|0), Math.max(3, ch*3|0));
+  // Gentle ripple along the curtain surface
+  _displaceZ(cgeo, (u, v) =>
+    (_caveNoise2(u*1.3 + cx*0.18 + i*4.1, v*0.85 + cz*0.18) - 0.5) * 0.38
+  );
+  const cm = new THREE.Mesh(cgeo, curtainMat);
+  cm.position.set(cx, CAVE_H - ch*0.5, cz);
+  cm.rotation.y = cAng;
+  scene.add(cm);
+  // Curtains are passable — no collider
 }
 
 function findSafeSpawn() {
@@ -407,7 +613,7 @@ player.position.copy(findSafeSpawn());
 const sonarRayTargets = [];
 scene.traverse((o) => {
   if (!o.isMesh) return;
-  if (o.material === caveMat || o.material === obstacleCaveMat) sonarRayTargets.push(o);
+  if (o.material === caveMat || o.material === obstacleCaveMat || o.material === curtainMat) sonarRayTargets.push(o);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -708,21 +914,30 @@ let playerDead = false;
 document.addEventListener('keydown', e => { keys[e.code] = true;  });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
 
+function _startGame() {
+  if (gameStarted || playerDead) return;
+  gameStarted = true;
+  document.getElementById('overlay').style.display        = 'none';
+  document.getElementById('gameover').style.display       = 'none';
+  document.getElementById('ui').style.display             = '';
+  document.getElementById('crosshair').style.display      = '';
+  document.getElementById('sonar-bar-wrap').style.display = '';
+}
+
 document.addEventListener('click', () => {
   if (playerDead) return;
-  if (!pointerLocked) document.body.requestPointerLock();
+  // Start the game immediately on click — pointer lock is optional (better UX when available).
+  _startGame();
+  if (!pointerLocked) {
+    const req = document.body.requestPointerLock();
+    // Modern browsers return a Promise; catch any rejection (file://, browser policy, etc.)
+    if (req && typeof req.catch === 'function') req.catch(() => {});
+  }
 });
 
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = !!document.pointerLockElement;
-  if (pointerLocked && !playerDead) {
-    gameStarted = true;
-    document.getElementById('overlay').style.display        = 'none';
-    document.getElementById('gameover').style.display       = 'none';
-    document.getElementById('ui').style.display             = '';
-    document.getElementById('crosshair').style.display      = '';
-    document.getElementById('sonar-bar-wrap').style.display = '';
-  }
+  if (pointerLocked && !playerDead) _startGame();
 });
 
 document.getElementById('restart-btn').addEventListener('click', (e) => {
@@ -731,16 +946,18 @@ document.getElementById('restart-btn').addEventListener('click', (e) => {
   playerDead = false;
   resetRun();
   document.getElementById('gameover').style.display = 'none';
-  document.body.requestPointerLock();
+  gameStarted = true;   // keep game running even if pointer lock is unavailable
+  const req = document.body.requestPointerLock();
+  if (req && typeof req.catch === 'function') req.catch(() => {});
 });
 
 document.addEventListener('mousedown', e => {
-  if (playerDead || !pointerLocked || e.button !== 0) return;
+  if (playerDead || !gameStarted || e.button !== 0) return;
   fireSonarBolt();
 });
 
 document.addEventListener('mousemove', e => {
-  if (!pointerLocked) return;
+  if (!gameStarted) return;
   yaw   -= e.movementX * 0.0022;
   pitch -= e.movementY * 0.0022;
   pitch  = Math.max(-Math.PI*0.47, Math.min(Math.PI*0.47, pitch));
@@ -858,15 +1075,23 @@ function updatePlayer(dt) {
   flapPhase += dt * (len > 0 ? 5.5 : 2.5);
   player.position.y += Math.sin(flapPhase) * (len > 0 ? 0.014 : 0.006);
 
-  // Clamp to cave bounds
+  // Clamp to cave bounds (floor/ceiling use displaced surface height)
   player.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.x));
-  player.position.y = Math.max(-CAVE_H+1,    Math.min(CAVE_H-1,    player.position.y));
   player.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.z));
+  {
+    const fY = getFloorY(player.position.x, player.position.z) + PLAYER_COLLIDE_R;
+    const cY = getCeilY (player.position.x, player.position.z) - PLAYER_COLLIDE_R;
+    player.position.y = Math.max(fY, Math.min(cY, player.position.y));
+  }
 
   resolveObstacleCollisions();
   player.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.x));
-  player.position.y = Math.max(-CAVE_H+1,    Math.min(CAVE_H-1,    player.position.y));
   player.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.z));
+  {
+    const fY = getFloorY(player.position.x, player.position.z) + PLAYER_COLLIDE_R;
+    const cY = getCeilY (player.position.x, player.position.z) - PLAYER_COLLIDE_R;
+    player.position.y = Math.max(fY, Math.min(cY, player.position.y));
+  }
 
   player.rotation.order = 'YXZ';
   player.rotation.y = yaw;
