@@ -64,7 +64,25 @@ canvas { display: block; }
 }
 #overlay h1  { font-size: 2.4rem; letter-spacing: 6px; margin-bottom: 16px; }
 #overlay p   { font-size: 0.82rem; opacity: 0.75; margin: 4px 0; letter-spacing: 1px; }
+#overlay .hazard { font-size: 0.72rem; opacity: 0.55; margin-top: 12px; max-width: 22rem; text-align: center; line-height: 1.35; }
 #overlay .go { margin-top: 28px; font-size: 0.95rem; animation: blink 1.4s ease-in-out infinite; }
+
+#gameover {
+  position: fixed; inset: 0; z-index: 30;
+  display: none; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.92);
+  color: #f44; font-family: monospace; text-shadow: 0 0 14px #f008;
+  pointer-events: auto;
+}
+#gameover h2 { font-size: 2rem; letter-spacing: 8px; margin-bottom: 12px; }
+#gameover .reason { color: #faa; opacity: 0.85; font-size: 0.85rem; margin-bottom: 28px; }
+#restart-btn {
+  font-family: monospace; font-size: 1rem; letter-spacing: 2px;
+  padding: 12px 28px; cursor: pointer;
+  color: #0cf; background: #001820; border: 1px solid #0af6;
+  text-shadow: 0 0 8px #0af;
+}
+#restart-btn:hover { background: #002a38; border-color: #6df; }
 
 @keyframes blink { 0%,100%{opacity:0.3} 50%{opacity:1} }
 

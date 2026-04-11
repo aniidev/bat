@@ -244,10 +244,40 @@ const obstacleCaveMat = new THREE.ShaderMaterial({
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CAVE GEOMETRY  (shell: caveMat; obstacles: same grid shader, red tint)
+//  CAVE GEOMETRY  (shell: caveMat; props: red lethal OR blue safe, same grid)
 // ═══════════════════════════════════════════════════════════════════════
 const CAVE_HALF = 38;
 const CAVE_H    = 9;
+
+// Player hit sphere (bat body) — tight; colliders match mesh geometry, not loose bounds.
+const PLAYER_COLLIDE_R   = 0.44;
+const SPAWN_CLEAR_R      = PLAYER_COLLIDE_R + 0.45;
+const LETHAL_OVERLAP_EPS = 0.008; // require this much geometric overlap before game over (float noise)
+
+const _capAb = new THREE.Vector3();
+const _capAp = new THREE.Vector3();
+const _capClosest = new THREE.Vector3();
+const _spawnTest = new THREE.Vector3();
+
+function closestPointOnSegment(out, p, a, b) {
+  _capAb.subVectors(b, a);
+  const lenSq = _capAb.lengthSq();
+  if (lenSq < 1e-12) return out.copy(a);
+  const t = Math.max(0, Math.min(1, _capAp.subVectors(p, a).dot(_capAb) / lenSq));
+  return out.copy(a).addScaledVector(_capAb, t);
+}
+
+/** Signed overlap depth along shortest path (positive = intersecting hulls). */
+function playerObstacleOverlapDepth(p, c, pr) {
+  if (c.type === 'sphere') {
+    return pr + c.radius - p.distanceTo(c.center);
+  }
+  if (c.type === 'capsule') {
+    closestPointOnSegment(_capClosest, p, c.a, c.b);
+    return pr + c.radius - p.distanceTo(_capClosest);
+  }
+  return -1e9;
+}
 
 function addMesh(geo, mat, pos, rotX, rotY) {
   const m = new THREE.Mesh(geo, mat || caveMat);
@@ -275,20 +305,13 @@ const rng = (() => {
   return () => { s ^= s<<13; s ^= s>>17; s ^= s<<5; return (s>>>0)/4294967296; };
 })();
 
-/** World-space bounding spheres for static obstacles (player + sonar bolts). */
+/**
+ * Analytic colliders matched to primitive geometry (not scene bounding spheres).
+ * lethal: red = instant death on hull overlap; blue = push only.
+ */
 const obstacleColliders = [];
-const _obsBox = new THREE.Box3();
-const _obsSph = new THREE.Sphere();
 
-function registerObstacleCollider(mesh) {
-  mesh.updateMatrixWorld(true);
-  _obsBox.setFromObject(mesh);
-  _obsBox.getBoundingSphere(_obsSph);
-  const r = Math.max(_obsSph.radius, 0.12);
-  obstacleColliders.push({ center: _obsSph.center.clone(), radius: r });
-}
-
-// Stalactites & stalagmites
+// Stalactites & stalagmites (~40% red lethal, rest blue safe — same grid shaders)
 for (let i = 0; i < 90; i++) {
   const x = (rng()-0.5)*(CAVE_HALF*2 - 4);
   const z = (rng()-0.5)*(CAVE_HALF*2 - 4);
@@ -298,40 +321,89 @@ for (let i = 0; i < 90; i++) {
   const base = 0.08 + rng() * 0.5;
   const top  = rng() > 0.5;   // stalactite from ceiling
 
+  const lethal = rng() < 0.4;
   const geo = new THREE.CylinderGeometry(top ? 0.02 : base, top ? base : 0.02, h, 6);
-  const m   = new THREE.Mesh(geo, obstacleCaveMat);
-  m.position.set(x, top ? CAVE_H - h*0.5 : -CAVE_H + h*0.5, z);
+  const m   = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+  const yC  = top ? CAVE_H - h * 0.5 : -CAVE_H + h * 0.5;
+  m.position.set(x, yC, z);
   scene.add(m);
-  registerObstacleCollider(m);
+  const rCyl = Math.max(top ? base : 0.02, top ? 0.02 : base) * 0.96;
+  const ya = yC - h * 0.5;
+  const yb = yC + h * 0.5;
+  obstacleColliders.push({
+    type: 'capsule',
+    a: new THREE.Vector3(x, ya, z),
+    b: new THREE.Vector3(x, yb, z),
+    radius: rCyl,
+    lethal
+  });
 }
 
-// Boulders / rocks
+// Boulders / rocks (polyhedron centered on mesh.position; circumradius ≈ s)
 for (let i = 0; i < 55; i++) {
   const s = 0.25 + rng()*1.9;
   const x = (rng()-0.5)*(CAVE_HALF*2-4);
   const z = (rng()-0.5)*(CAVE_HALF*2-4);
-  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), obstacleCaveMat);
-  m.position.set(x, -CAVE_H + s*0.55, z);
+  const lethal = rng() < 0.4;
+  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), lethal ? obstacleCaveMat : caveMat);
+  const yB = -CAVE_H + s*0.55;
+  m.position.set(x, yB, z);
   m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
   scene.add(m);
-  registerObstacleCollider(m);
+  obstacleColliders.push({
+    type: 'sphere',
+    center: new THREE.Vector3(x, yB, z),
+    radius: s * 0.9,
+    lethal
+  });
 }
 
-// Mid-air crystal clusters
+// Mid-air crystal clusters (octahedron radius s from center)
 for (let i = 0; i < 25; i++) {
   const s = 0.15 + rng()*0.7;
-  const m = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), obstacleCaveMat);
-  m.position.set(
-    (rng()-0.5)*(CAVE_HALF*2-6),
-    (rng()-0.5)*(CAVE_H*1.6),
-    (rng()-0.5)*(CAVE_HALF*2-6)
-  );
+  const lethal = rng() < 0.4;
+  const m = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), lethal ? obstacleCaveMat : caveMat);
+  const ox = (rng()-0.5)*(CAVE_HALF*2-6);
+  const oy = (rng()-0.5)*(CAVE_H*1.6);
+  const oz = (rng()-0.5)*(CAVE_HALF*2-6);
+  m.position.set(ox, oy, oz);
   m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
   scene.add(m);
-  registerObstacleCollider(m);
+  obstacleColliders.push({
+    type: 'sphere',
+    center: new THREE.Vector3(ox, oy, oz),
+    radius: s * 0.9,
+    lethal
+  });
 }
 
-// Cave shell + red obstacles — sonar bolts raycast against both.
+function findSafeSpawn() {
+  function spawnFree(pos, pr) {
+    const gap = 0.18;
+    for (let i = 0; i < obstacleColliders.length; i++) {
+      if (playerObstacleOverlapDepth(pos, obstacleColliders[i], pr) >= -gap) return false;
+    }
+    return true;
+  }
+  const rings = [0, 1.8, 3.5, 5.2, 7, 9, 11, 13, 15];
+  for (let yi = 0; yi < 12; yi++) {
+    const y = -CAVE_H + 2.2 + (yi / 11) * (CAVE_H * 2 - 4.4);
+    for (const R of rings) {
+      for (let step = 0; step < 24; step++) {
+        const a = (step / 24) * Math.PI * 2;
+        _spawnTest.set(Math.cos(a) * R, y, Math.sin(a) * R);
+        _spawnTest.x = Math.max(-CAVE_HALF + 2.5, Math.min(CAVE_HALF - 2.5, _spawnTest.x));
+        _spawnTest.z = Math.max(-CAVE_HALF + 2.5, Math.min(CAVE_HALF - 2.5, _spawnTest.z));
+        if (spawnFree(_spawnTest, SPAWN_CLEAR_R)) return _spawnTest.clone();
+      }
+    }
+  }
+  return new THREE.Vector3(0, CAVE_H - 3, 0);
+}
+
+player.position.copy(findSafeSpawn());
+
+// Cave shell + all grid props — sonar bolts
 const sonarRayTargets = [];
 scene.traverse((o) => {
   if (!o.isMesh) return;
@@ -522,6 +594,7 @@ function beginSonarPulse(origin, outwardNormal) {
 }
 
 function fireSonarBolt() {
+  if (playerDead) return;
   const now = performance.now() / 1000;
   if (now - lastSonarTime < SONAR_COOLDOWN) return;
   lastSonarTime = now;
@@ -600,31 +673,71 @@ function updateImpactBursts(dt) {
   }
 }
 
+function clearSonarFX() {
+  for (let i = activeProjectiles.length - 1; i >= 0; i--) {
+    scene.remove(activeProjectiles[i].mesh);
+    activeProjectiles.splice(i, 1);
+  }
+  for (let i = activePulses.length - 1; i >= 0; i--) {
+    const p = activePulses[i];
+    p.rings.forEach((r) => {
+      scene.remove(r);
+      r.traverse((o) => {
+        if (o.isLine && o.material) o.material.dispose();
+      });
+    });
+    activePulses.splice(i, 1);
+  }
+  for (let i = impactBursts.length - 1; i >= 0; i--) {
+    const b = impactBursts[i];
+    scene.remove(b.mesh);
+    b.geo.dispose();
+    b.mat.dispose();
+    impactBursts.splice(i, 1);
+  }
+  for (let i = 0; i < MAX_PULSES; i++) uPulseVec4[i].w = -1;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  INPUT
 // ═══════════════════════════════════════════════════════════════════════
 const keys = {};
 let yaw = 0, pitch = 0, pointerLocked = false, gameStarted = false;
+let playerDead = false;
 
 document.addEventListener('keydown', e => { keys[e.code] = true;  });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 document.addEventListener('click', () => {
+  if (playerDead) return;
   if (!pointerLocked) document.body.requestPointerLock();
 });
 
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = !!document.pointerLockElement;
-  if (pointerLocked && !gameStarted) {
+  if (pointerLocked && !playerDead) {
     gameStarted = true;
     document.getElementById('overlay').style.display        = 'none';
+    document.getElementById('gameover').style.display       = 'none';
     document.getElementById('ui').style.display             = '';
     document.getElementById('crosshair').style.display      = '';
     document.getElementById('sonar-bar-wrap').style.display = '';
   }
 });
 
-document.addEventListener('mousedown', e => { if (pointerLocked && e.button === 0) fireSonarBolt(); });
+document.getElementById('restart-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!playerDead) return;
+  playerDead = false;
+  resetRun();
+  document.getElementById('gameover').style.display = 'none';
+  document.body.requestPointerLock();
+});
+
+document.addEventListener('mousedown', e => {
+  if (playerDead || !pointerLocked || e.button !== 0) return;
+  fireSonarBolt();
+});
 
 document.addEventListener('mousemove', e => {
   if (!pointerLocked) return;
@@ -646,26 +759,65 @@ const CAM_DIST = 6.2;
 const CAM_HEIGHT = 1.35;
 const CAM_LOOK_AHEAD = 1.35;
 
-const PLAYER_COLLIDE_R = 0.52;
 const _sepObs = new THREE.Vector3();
+
+function triggerGameOver() {
+  if (playerDead) return;
+  playerDead = true;
+  clearSonarFX();
+  try {
+    document.exitPointerLock();
+  } catch (_) {}
+  pointerLocked = false;
+  document.getElementById('gameover').style.display = 'flex';
+  document.getElementById('ui').style.display             = 'none';
+  document.getElementById('crosshair').style.display    = 'none';
+  document.getElementById('sonar-bar-wrap').style.display = 'none';
+}
+
+function resetRun() {
+  clearSonarFX();
+  player.position.copy(findSafeSpawn());
+  player.rotation.set(0, 0, 0);
+  yaw = 0;
+  pitch = 0;
+  flapPhase = 0;
+  lastSonarTime = -999;
+  sonarCharge = 1;
+  sonarFill.style.width = '100%';
+  Object.keys(keys).forEach((k) => { keys[k] = false; });
+}
 
 function resolveObstacleCollisions() {
   const p = player.position;
+  const pr = PLAYER_COLLIDE_R;
+
+  for (let i = 0; i < obstacleColliders.length; i++) {
+    const c = obstacleColliders[i];
+    if (!c.lethal) continue;
+    const depth = playerObstacleOverlapDepth(p, c, pr);
+    if (depth > LETHAL_OVERLAP_EPS) {
+      triggerGameOver();
+      return;
+    }
+  }
+
   for (let pass = 0; pass < 3; pass++) {
-    for (let i = 0; i < obstacleColliders.length; i++) {
-      const c = obstacleColliders[i];
-      _sepObs.copy(p).sub(c.center);
-      const dist = _sepObs.length();
-      const need = c.radius + PLAYER_COLLIDE_R;
-      if (dist < 1e-6) {
-        _sepObs.set(0, 1, 0);
-        p.addScaledVector(_sepObs, need);
-        continue;
+    for (let j = 0; j < obstacleColliders.length; j++) {
+      const c = obstacleColliders[j];
+      if (c.lethal) continue;
+      const depth = playerObstacleOverlapDepth(p, c, pr);
+      if (depth <= 0) continue;
+      if (c.type === 'sphere') {
+        _sepObs.subVectors(p, c.center);
+      } else {
+        closestPointOnSegment(_capClosest, p, c.a, c.b);
+        _sepObs.subVectors(p, _capClosest);
       }
-      if (dist < need) {
-        _sepObs.multiplyScalar((need - dist) / dist);
-        p.add(_sepObs);
-      }
+      const len = _sepObs.length();
+      if (len < 1e-6) _sepObs.set(0, 1, 0);
+      else _sepObs.multiplyScalar(1 / len);
+      p.addScaledVector(_sepObs, depth);
     }
   }
 }
@@ -682,6 +834,7 @@ function updateThirdPersonCamera() {
 }
 
 function updatePlayer(dt) {
+  if (playerDead) return;
   const fast  = keys['ShiftLeft'] || keys['ShiftRight']; //add this later if gameplay boring
   const speed = 10;
   const sinY  = Math.sin(yaw), cosY = Math.cos(yaw);
@@ -727,17 +880,21 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  if (gameStarted) updatePlayer(dt);
+  if (gameStarted && !playerDead) updatePlayer(dt);
   updateThirdPersonCamera();
 
   if (batMixer) batMixer.update(dt);
 
   // Sonar charge bar
-  sonarCharge = Math.min(1, sonarCharge + dt / SONAR_COOLDOWN);
-  sonarFill.style.width = (sonarCharge * 100).toFixed(1) + '%';
+  if (!playerDead) {
+    sonarCharge = Math.min(1, sonarCharge + dt / SONAR_COOLDOWN);
+    sonarFill.style.width = (sonarCharge * 100).toFixed(1) + '%';
+  }
 
-  updateSonarProjectiles(dt);
-  updateImpactBursts(dt);
+  if (!playerDead) {
+    updateSonarProjectiles(dt);
+    updateImpactBursts(dt);
+  }
 
   // ── advance pulses ────────────────────────────────────────────────
   for (let i = activePulses.length - 1; i >= 0; i--) {
