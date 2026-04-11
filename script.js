@@ -243,6 +243,12 @@ for (let i = 0; i < 25; i++) {
   scene.add(m);
 }
 
+// Cave meshes only — used to raycast sonar bolts (bat uses different materials).
+const sonarRayTargets = [];
+scene.traverse((o) => {
+  if (o.isMesh && o.material === caveMat) sonarRayTargets.push(o);
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 //  PULSE RING VISUAL
 //  A very thin LineLoop circle that expands quickly to give the player
@@ -261,7 +267,7 @@ const ringGeo   = makeCircleLine(72);
 const ringGeoV  = makeCircleLine(72);  // vertical ring
 
 // ═══════════════════════════════════════════════════════════════════════
-//  SONAR SYSTEM
+//  SONAR BOLT + REVERB (crosshair aim → impact drives pulse origin)
 // ═══════════════════════════════════════════════════════════════════════
 const PULSE_SPEED    = 13;    // world units / second
 const PULSE_MAXR     = 120;   // keep data alive until everything has faded
@@ -269,49 +275,240 @@ const SONAR_COOLDOWN = 1.4;   // seconds between shots
 let   lastSonarTime  = -999;
 let   sonarCharge    = 1.0;
 
+const PROJ_SPEED     = 62;
+const PROJ_MAX_DIST  = 110;
+
+const raycaster = new THREE.Raycaster();
+raycaster.near = 0.02;
+raycaster.far  = 220;
+
+const boltGeoms = {
+  core: new THREE.IcosahedronGeometry(0.085, 1),
+  glow: new THREE.IcosahedronGeometry(0.2, 0),
+  tail: new THREE.ConeGeometry(0.055, 0.52, 7, 1, true)
+};
+const boltMats = {
+  core: new THREE.MeshBasicMaterial({ color: 0xaaffff, toneMapped: false }),
+  glow: new THREE.MeshBasicMaterial({
+    color: 0x0088ff,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false
+  }),
+  tail: new THREE.MeshBasicMaterial({
+    color: 0x55ddff,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false
+  })
+};
+
+function makeSonarBoltVisual() {
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(boltGeoms.core, boltMats.core);
+  const glow = new THREE.Mesh(boltGeoms.glow, boltMats.glow);
+  const tail = new THREE.Mesh(boltGeoms.tail, boltMats.tail);
+  tail.rotation.x = Math.PI / 2;
+  tail.position.z = 0.32;
+  g.add(glow, core, tail);
+  return g;
+}
+
 // JS-side pulse list  (separate from the uniform slots)
-const activePulses = [];   // { origin, radius, rings:[] }
+const activePulses = [];       // { origin, radius, rings:[Object3D], ringsDead }
+const activeProjectiles = [];  // { mesh, dir: Vector3, traveled }
+const impactBursts = [];       // { mesh, mat, geo, t }
+
+const _boltLook = new THREE.Vector3();
+const _n = new THREE.Vector3();
+const _spawn = new THREE.Vector3();
+const _impactBias = new THREE.Vector3();
+const _yAxis = new THREE.Vector3(0, 1, 0);
+
+/** Avoid setFromUnitVectors degeneracy when n ∥ ±Y (floors / ceilings). */
+function alignRingGroupToNormal(ringParent, n) {
+  if (n.lengthSq() < 1e-10) return;
+  _n.copy(n).normalize();
+  const d = Math.abs(_yAxis.dot(_n));
+  if (d > 0.999) {
+    ringParent.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), _n.y > 0 ? 0 : Math.PI);
+    return;
+  }
+  ringParent.quaternion.setFromUnitVectors(_yAxis, _n);
+}
 
 const sonarFill = document.getElementById('sonar-fill');
 const flashEl   = document.getElementById('flash');
 
-function emitSonar() {
-  const now = performance.now() / 1000;
-  if (now - lastSonarTime < SONAR_COOLDOWN) return;
-  lastSonarTime = now;
-  sonarCharge   = 0;
-
-  const origin = player.position.clone();
-
-  // Two visible rings: horizontal (XZ) + one tilted with camera look
-  const hRingMat = new THREE.LineBasicMaterial({ color: 0x00bbff, transparent: true, opacity: 0.85 });
-  const vRingMat = new THREE.LineBasicMaterial({ color: 0x00bbff, transparent: true, opacity: 0.55 });
-  const hRing    = new THREE.Line(ringGeo,  hRingMat);
-  const vRing    = new THREE.Line(ringGeoV, vRingMat);
-  hRing.position.copy(origin);
-  vRing.position.copy(origin);
-  vRing.rotation.x = Math.PI / 2;   // vertical ring in XY plane
-  scene.add(hRing, vRing);
-
-  activePulses.push({ origin, radius: 0.2, rings: [hRing, vRing], ringsDead: false });
-
-  // Screen flash
-  flashEl.style.opacity = '1';
-  setTimeout(() => { flashEl.style.opacity = '0'; }, 60);
-
-  // Chirp sound
+function playLaunchChirp() {
   try {
     const ac  = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ac.createOscillator();
     const g   = ac.createGain();
     osc.connect(g); g.connect(ac.destination);
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(3400, ac.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(280, ac.currentTime + 0.13);
-    g.gain.setValueAtTime(0.22, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.15);
-    osc.start(); osc.stop(ac.currentTime + 0.16);
-  } catch(_) {}
+    osc.frequency.setValueAtTime(4200, ac.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(900, ac.currentTime + 0.07);
+    g.gain.setValueAtTime(0.12, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.09);
+    osc.start(); osc.stop(ac.currentTime + 0.1);
+  } catch (_) {}
+}
+
+function playImpactChirp() {
+  try {
+    const ac  = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ac.createOscillator();
+    const g   = ac.createGain();
+    osc.connect(g); g.connect(ac.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(2100, ac.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(180, ac.currentTime + 0.22);
+    g.gain.setValueAtTime(0.2, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.24);
+    osc.start(); osc.stop(ac.currentTime + 0.25);
+  } catch (_) {}
+}
+
+function spawnImpactBurst(pos) {
+  const geo = new THREE.SphereGeometry(0.16, 10, 10);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x66ffff,
+    transparent: true,
+    opacity: 0.72,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(pos);
+  scene.add(mesh);
+  impactBursts.push({ mesh, mat, geo, t: 0 });
+}
+
+/**
+ * @param {THREE.Vector3} origin
+ * @param {THREE.Vector3|null} outwardNormal  world-space mesh normal at hit; null = axis-aligned rings
+ */
+function beginSonarPulse(origin, outwardNormal) {
+  const originClone = origin.clone();
+
+  const ringParent = new THREE.Group();
+  ringParent.position.copy(originClone);
+
+  if (outwardNormal && outwardNormal.lengthSq() > 1e-8) {
+    _n.copy(outwardNormal).normalize();
+    ringParent.position.addScaledVector(_n, 0.06);
+    alignRingGroupToNormal(ringParent, _n);
+  }
+
+  const hRingMat = new THREE.LineBasicMaterial({
+    color: 0x44eeff,
+    transparent: true,
+    opacity: 0.9
+  });
+  const vRingMat = new THREE.LineBasicMaterial({
+    color: 0x00b8ff,
+    transparent: true,
+    opacity: 0.62
+  });
+  const hRing = new THREE.Line(ringGeo, hRingMat);
+  const vRing = new THREE.Line(ringGeo, vRingMat);
+  vRing.rotation.y = Math.PI / 2;
+  ringParent.add(hRing, vRing);
+  scene.add(ringParent);
+
+  activePulses.push({ origin: originClone, radius: 0.2, rings: [ringParent], ringsDead: false });
+
+  spawnImpactBurst(originClone);
+
+  flashEl.style.opacity = '0.62';
+  setTimeout(() => { flashEl.style.opacity = '0'; }, 55);
+
+  playImpactChirp();
+}
+
+function fireSonarBolt() {
+  const now = performance.now() / 1000;
+  if (now - lastSonarTime < SONAR_COOLDOWN) return;
+  lastSonarTime = now;
+  sonarCharge   = 0;
+
+  raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  const dir = raycaster.ray.direction.clone().normalize();
+
+  _spawn.copy(player.position);
+  _spawn.y += 0.38;
+  _spawn.addScaledVector(dir, 0.58);
+
+  const mesh = makeSonarBoltVisual();
+  mesh.position.copy(_spawn);
+  _boltLook.copy(_spawn).add(dir);
+  mesh.lookAt(_boltLook);
+  scene.add(mesh);
+
+  activeProjectiles.push({ mesh, dir, traveled: 0 });
+
+  flashEl.style.opacity = '0.28';
+  setTimeout(() => { flashEl.style.opacity = '0'; }, 40);
+
+  playLaunchChirp();
+}
+
+function updateSonarProjectiles(dt) {
+  const step = PROJ_SPEED * dt;
+  for (let i = activeProjectiles.length - 1; i >= 0; i--) {
+    const p = activeProjectiles[i];
+    raycaster.set(p.mesh.position, p.dir);
+    const prevFar = raycaster.far;
+    raycaster.far = step + 0.32;
+    const hits = raycaster.intersectObjects(sonarRayTargets, false);
+    raycaster.far = prevFar;
+
+    if (hits.length > 0) {
+      const h = hits[0];
+      _impactBias.copy(h.point);
+      let n = null;
+      if (h.face) {
+        n = _n.copy(h.face.normal).transformDirection(h.object.matrixWorld);
+      }
+      beginSonarPulse(_impactBias, n);
+      scene.remove(p.mesh);
+      activeProjectiles.splice(i, 1);
+      continue;
+    }
+
+    p.mesh.position.addScaledVector(p.dir, step);
+    _boltLook.copy(p.mesh.position).add(p.dir);
+    p.mesh.lookAt(_boltLook);
+
+    p.traveled += step;
+    if (p.traveled >= PROJ_MAX_DIST) {
+      beginSonarPulse(p.mesh.position, null);
+      scene.remove(p.mesh);
+      activeProjectiles.splice(i, 1);
+    }
+  }
+}
+
+function updateImpactBursts(dt) {
+  for (let i = impactBursts.length - 1; i >= 0; i--) {
+    const b = impactBursts[i];
+    b.t += dt;
+    const k = b.t / 0.32;
+    b.mesh.scale.setScalar(1 + k * 7.5);
+    b.mat.opacity = Math.max(0, 0.75 * (1 - k * k));
+    if (b.t >= 0.32) {
+      scene.remove(b.mesh);
+      b.geo.dispose();
+      b.mat.dispose();
+      impactBursts.splice(i, 1);
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -338,7 +535,7 @@ document.addEventListener('pointerlockchange', () => {
   }
 });
 
-document.addEventListener('mousedown', e => { if (pointerLocked && e.button === 0) emitSonar(); });
+document.addEventListener('mousedown', e => { if (pointerLocked && e.button === 0) fireSonarBolt(); });
 
 document.addEventListener('mousemove', e => {
   if (!pointerLocked) return;
@@ -421,6 +618,9 @@ function animate() {
   sonarCharge = Math.min(1, sonarCharge + dt / SONAR_COOLDOWN);
   sonarFill.style.width = (sonarCharge * 100).toFixed(1) + '%';
 
+  updateSonarProjectiles(dt);
+  updateImpactBursts(dt);
+
   // ── advance pulses ────────────────────────────────────────────────
   for (let i = activePulses.length - 1; i >= 0; i--) {
     const p = activePulses[i];
@@ -430,12 +630,20 @@ function animate() {
     if (!p.ringsDead) {
       const rScale  = p.radius;
       const ringLife = 1.0 - p.radius / 28.0;   // fade out by radius 28
-      p.rings.forEach(r => {
+      const op = Math.max(0, ringLife * ringLife * 0.8);
+      p.rings.forEach((r) => {
         r.scale.setScalar(rScale);
-        r.material.opacity = Math.max(0, ringLife * ringLife * 0.8);
+        r.traverse((o) => {
+          if (o.isLine && o.material) o.material.opacity = op;
+        });
       });
       if (ringLife <= 0) {
-        p.rings.forEach(r => { scene.remove(r); r.material.dispose(); });
+        p.rings.forEach((r) => {
+          scene.remove(r);
+          r.traverse((o) => {
+            if (o.isLine && o.material) o.material.dispose();
+          });
+        });
         p.ringsDead = true;
       }
     }
@@ -443,7 +651,12 @@ function animate() {
     // Kill pulse once the trail fully clears the farthest possible surface
     if (p.radius >= PULSE_MAXR) {
       if (!p.ringsDead) {
-        p.rings.forEach(r => { scene.remove(r); r.material.dispose(); });
+        p.rings.forEach((r) => {
+          scene.remove(r);
+          r.traverse((o) => {
+            if (o.isLine && o.material) o.material.dispose();
+          });
+        });
       }
       activePulses.splice(i, 1);
     }
