@@ -569,8 +569,8 @@ function updateThirdPersonCamera() {
 }
 
 function updatePlayer(dt) {
-  const fast  = keys['ShiftLeft'] || keys['ShiftRight'];
-  const speed = fast ? 15 : 8;
+  const fast  = keys['ShiftLeft'] || keys['ShiftRight']; //add this later if gameplay boring
+  const speed = 10;
   const sinY  = Math.sin(yaw), cosY = Math.cos(yaw);
 
   let dx = 0, dy = 0, dz = 0;
@@ -579,7 +579,7 @@ function updatePlayer(dt) {
   if (keys['KeyA'])                       { dx -= cosY;  dz += sinY;  }
   if (keys['KeyD'])                       { dx += cosY;  dz -= sinY;  }
   if (keys['KeyQ'] || keys['Space'])        dy += 1;
-  if (keys['KeyE'] || keys['ControlLeft'])  dy -= 1;
+  if (keys['KeyE'] || keys['ShiftLeft'])  dy -= 1;
 
   const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
   if (len > 0) {
