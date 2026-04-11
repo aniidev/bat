@@ -12,7 +12,7 @@ document.body.appendChild(renderer.domElement);
 const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
 
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.05, 200);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.05, 360);
 
 // World-space player + bat (third person — camera chases, does not sit on the bat).
 const player = new THREE.Group();
@@ -246,8 +246,8 @@ const obstacleCaveMat = new THREE.ShaderMaterial({
 // ═══════════════════════════════════════════════════════════════════════
 //  CAVE GEOMETRY  (shell: caveMat; props: red lethal OR blue safe, same grid)
 // ═══════════════════════════════════════════════════════════════════════
-const CAVE_HALF = 38;
-const CAVE_H    = 9;
+const CAVE_HALF = 56;
+const CAVE_H    = 14;
 
 // Player hit sphere (bat body) — tight; colliders match mesh geometry, not loose bounds.
 const PLAYER_COLLIDE_R   = 0.44;
@@ -320,26 +320,53 @@ function _displaceZ(geo, fn) {
 }
 
 // ── Three-scale surface displacement (regional + local + fine) ────
-// Regional scale gives dramatic altitude differences across the cave
-// (one corner of the floor can be 4–5 m higher than the opposite corner).
+// Slightly gentler amplitudes so floor/ceiling read as one continuous chamber
+// instead of unrelated “lumpy patches.”
 function _floorDisp(wx, wz) {
-  const reg  = _caveFbm(wx*0.016 + 3.7,  wz*0.016 + 9.1,  2); // whole-cave tilt  (0-1)
-  const mid  = _caveFbm(wx*0.058 + 7.3,  wz*0.058 + 2.4,  3); // ridges/bowls     (0-1)
-  const fine = _caveFbm(wx*0.22  + 3.7,  wz*0.22  + 9.1,  3); // rocky texture    (0-1)
-  return reg * 4.5 + mid * 2.2 + fine * 1.0;   // 0 – 7.7 m above base
+  const reg  = _caveFbm(wx*0.014 + 3.7,  wz*0.014 + 9.1,  2);
+  const mid  = _caveFbm(wx*0.052 + 7.3,  wz*0.052 + 2.4,  3);
+  const fine = _caveFbm(wx*0.20  + 3.7,  wz*0.20  + 9.1,  3);
+  return reg * 3.7 + mid * 1.9 + fine * 0.9;
 }
 function _ceilDisp(wx, wz) {
-  const reg  = _caveFbm(wx*0.016 + 11.3, wz*0.016 + 5.8,  2);
-  const mid  = _caveFbm(wx*0.058 + 15.7, wz*0.058 + 8.2,  3);
-  const fine = _caveFbm(wx*0.22  + 11.3, wz*0.22  + 5.8,  3);
-  return reg * 4.0 + mid * 1.8 + fine * 0.8;   // 0 – 6.6 m below base
+  const reg  = _caveFbm(wx*0.014 + 11.3, wz*0.014 + 5.8,  2);
+  const mid  = _caveFbm(wx*0.052 + 15.7, wz*0.052 + 8.2,  3);
+  const fine = _caveFbm(wx*0.20  + 11.3, wz*0.20  + 5.8,  3);
+  return reg * 3.3 + mid * 1.55 + fine * 0.65;
 }
 
 function getFloorY(wx, wz) { return -CAVE_H + _floorDisp(wx, wz); }
 function getCeilY (wx, wz) { return  CAVE_H - _ceilDisp(wx, wz); }
 
-// Floor (130×130 verts)
-const floorGeo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_HALF*2, 130, 130);
+/** Same displacement as _rockWallGeo — used to clamp the player so the sphere stays inside the visible rock shell. */
+function _wallRockDisp(u, v, sx, sz) {
+  const large   = _caveFbm(u * 0.056 + sx,      v * 0.042 + sz,      3);
+  const scallop = _caveFbm(u * 0.19  + sx + 5.1, v * 0.30  + sz + 5.1,  3);
+  const fine    = _caveFbm(u * 0.52  + sx + 9.3, v * 0.52  + sz + 9.3,  2);
+  return large * 6.2 + scallop * 2.85 + fine * 0.7;
+}
+
+/**
+ * Keep player sphere inside the four displaced walls (fixes clipping through sides).
+ * Derived from the same local (u,v) → displacement as the wall PlaneGeometry meshes.
+ */
+function constrainPlayerToWallShell(pos, r) {
+  const px = pos.x;
+  const py = pos.y;
+  const pz = pos.z;
+  // North z−, south z+, west x−, east x+ — inner cave is the region *inside* each slab.
+  const zMin = -CAVE_HALF + _wallRockDisp(px, py, 0.0, 0.0) + r;
+  const zMax = CAVE_HALF - _wallRockDisp(-px, py, 5.3, 2.1) - r;
+  const xMin = -CAVE_HALF + _wallRockDisp(-pz, py, 1.7, 7.4) + r;
+  const xMax = CAVE_HALF - _wallRockDisp(pz, py, 9.2, 3.8) - r;
+  if (pz < zMin) pos.z = zMin;
+  if (pz > zMax) pos.z = zMax;
+  if (px < xMin) pos.x = xMin;
+  if (px > xMax) pos.x = xMax;
+}
+
+// Floor (150×150 verts)
+const floorGeo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_HALF*2, 150, 150);
 _displaceZ(floorGeo, (lx, ly) => _floorDisp(lx, -ly));
 addMesh(floorGeo, null, [0, -CAVE_H, 0], -Math.PI/2);
 
@@ -352,18 +379,13 @@ addMesh(ceilGeo, null, [0, CAVE_H, 0], Math.PI/2);
 // water erosion channels).  Three scales: large rock face → medium scallop → fine surface.
 function _rockWallGeo(wS, hS, sx, sz) {
   const geo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_H*2, wS, hS);
-  _displaceZ(geo, (u, v) => {
-    const large   = _caveFbm(u*0.062 + sx,      v*0.045 + sz,      3); // big rock faces
-    const scallop = _caveFbm(u*0.21  + sx+5.1,  v*0.32  + sz+5.1,  3); // water scallops (taller than wide)
-    const fine    = _caveFbm(u*0.56  + sx+9.3,  v*0.56  + sz+9.3,  2); // fine texture
-    return large * 7.0 + scallop * 3.2 + fine * 0.75;
-  });
+  _displaceZ(geo, (u, v) => _wallRockDisp(u, v, sx, sz));
   return geo;
 }
-addMesh(_rockWallGeo(80, 32, 0.0, 0.0), null, [0, 0, -CAVE_HALF], 0, 0);
-addMesh(_rockWallGeo(80, 32, 5.3, 2.1), null, [0, 0,  CAVE_HALF], 0, Math.PI);
-addMesh(_rockWallGeo(80, 32, 1.7, 7.4), null, [-CAVE_HALF, 0, 0], 0,  Math.PI/2);
-addMesh(_rockWallGeo(80, 32, 9.2, 3.8), null, [ CAVE_HALF, 0, 0], 0, -Math.PI/2);
+addMesh(_rockWallGeo(88, 36, 0.0, 0.0), null, [0, 0, -CAVE_HALF], 0, 0);
+addMesh(_rockWallGeo(88, 36, 5.3, 2.1), null, [0, 0,  CAVE_HALF], 0, Math.PI);
+addMesh(_rockWallGeo(88, 36, 1.7, 7.4), null, [-CAVE_HALF, 0, 0], 0,  Math.PI/2);
+addMesh(_rockWallGeo(88, 36, 9.2, 3.8), null, [ CAVE_HALF, 0, 0], 0, -Math.PI/2);
 
 // Seeded RNG (deterministic layout every time)
 const rng = (() => {
@@ -373,7 +395,14 @@ const rng = (() => {
 
 const obstacleColliders = [];
 
-// ── Shared helper: spawn one stalactite (fromCeil=true) or stalagmite (false) ──
+/** 0 = open gallery center, 1 = near perimeter — one coherent fly space, danger on the rim. */
+function galleryEdge01(x, z) {
+  const nx = x / CAVE_HALF;
+  const nz = z / CAVE_HALF;
+  return Math.min(1, Math.sqrt(nx * nx + nz * nz) * 1.12);
+}
+
+// ── Shared helper: classic drip cylinder ───────────────────────────
 function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
   const tipR = lethal ? 0.015 + rng()*0.03 : 0.03 + rng()*0.09;
   const geo  = new THREE.CylinderGeometry(
@@ -382,7 +411,6 @@ function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
     h, 6
   );
   const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
-  // Anchor to the actual displaced surface so nothing floats or buries
   const surfY = fromCeil
     ? getCeilY(x, z)  - h * 0.5
     : getFloorY(x, z) + h * 0.5;
@@ -396,15 +424,116 @@ function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
   });
 }
 
-// ── DRIP ZONES — the primary speleothem system ────────────────────
-// Limestone caves form stalactites where water seeps through cracks.
-// Drips fall directly below, growing matching stalagmites.
-// Over thousands of years some pairs merge into columns (hourglass shape).
-for (let di = 0; di < 9; di++) {
-  const zx     = (rng()-0.5) * (CAVE_HALF*2 - 18);
-  const zz     = (rng()-0.5) * (CAVE_HALF*2 - 18);
-  const spread = 4 + rng() * 10;
-  const count  = 4 + Math.floor(rng() * 14);
+/** Sharp icicle / soda-straw cone hanging from ceiling — collider as thin capsule. */
+function _spawnCeilingCone(x, z, h, baseR, lethal) {
+  const seg = 5 + (rng() * 4) | 0;
+  const geo = new THREE.ConeGeometry(baseR, h, seg);
+  const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+  m.rotation.x = Math.PI;
+  const topY = getCeilY(x, z);
+  m.position.set(x, topY - h * 0.5, z);
+  scene.add(m);
+  const rad = Math.max(0.04, baseR * 0.55);
+  obstacleColliders.push({
+    type: 'capsule',
+    a: new THREE.Vector3(x, topY - h * 0.08, z),
+    b: new THREE.Vector3(x, topY - h * 0.92, z),
+    radius: rad * (lethal ? 0.95 : 1.05),
+    lethal
+  });
+}
+
+/** Broken fracture block or chert nodule — box / tetra / octa. */
+function _spawnPolyRock(x, z, yCenter, sx, sy, sz, lethal, kind) {
+  let geo;
+  if (kind === 0) {
+    geo = new THREE.BoxGeometry(sx, sy, sz);
+  } else if (kind === 1) {
+    const t = (sx + sy + sz) / 3;
+    geo = new THREE.TetrahedronGeometry(t * 0.92, 0);
+  } else if (kind === 2) {
+    const t = (sx + sy + sz) / 3;
+    geo = new THREE.OctahedronGeometry(t * 0.88, 0);
+  } else {
+    geo = new THREE.DodecahedronGeometry((sx + sy + sz) / 3 * 0.45, 0);
+  }
+  const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+  m.position.set(x, yCenter, z);
+  m.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+  scene.add(m);
+  const rr = Math.max(sx, sy, sz) * 0.42;
+  obstacleColliders.push({
+    type: 'sphere',
+    center: new THREE.Vector3(x, yCenter, z),
+    radius: rr * (kind === 0 ? 0.75 : 0.88),
+    lethal
+  });
+}
+
+/** Ceiling: varied drip shapes — cones, frusta, prisms — reads as natural cave, not one repeated mesh. */
+function _spawnCeilingVariety(x, z, lethal) {
+  const roll = rng();
+  const h = 1.35 + rng() * 5.4;
+  const base = 0.07 + rng() * 0.5;
+  if (roll < 0.34) {
+    _spawnTite(x, z, true, h, base, lethal);
+  } else if (roll < 0.58) {
+    _spawnCeilingCone(x, z, h, base * (1.1 + rng() * 1.4), lethal);
+  } else if (roll < 0.78) {
+    const geo = new THREE.CylinderGeometry(base * 0.22, base * 1.05, h, 6);
+    const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+    const surfY = getCeilY(x, z) - h * 0.5;
+    m.position.set(x, surfY, z);
+    scene.add(m);
+    obstacleColliders.push({
+      type: 'capsule',
+      a: new THREE.Vector3(x, surfY - h * 0.5, z),
+      b: new THREE.Vector3(x, surfY + h * 0.5, z),
+      radius: base * 0.85,
+      lethal
+    });
+  } else {
+    const w = base * (1.2 + rng());
+    const d = h * (0.35 + rng() * 0.45);
+    const topY = getCeilY(x, z);
+    const cy = topY - d * 0.5;
+    _spawnPolyRock(x, z, cy, w * 1.1, d, w * 0.85, lethal, 0);
+  }
+}
+
+/** Floor spike / mound — cone, prism, or crystal shard. */
+function _spawnFloorVariety(x, z, lethal) {
+  const h = 0.45 + rng() * 2.8;
+  const base = 0.06 + rng() * 0.42;
+  const roll = rng();
+  if (roll < 0.45) {
+    _spawnTite(x, z, false, h, base, lethal);
+  } else if (roll < 0.72) {
+    const geo = new THREE.ConeGeometry(base * 1.15, h, 5 + ((rng() * 4) | 0));
+    const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+    const surfY = getFloorY(x, z) + h * 0.5;
+    m.position.set(x, surfY, z);
+    scene.add(m);
+    obstacleColliders.push({
+      type: 'capsule',
+      a: new THREE.Vector3(x, surfY - h * 0.5, z),
+      b: new THREE.Vector3(x, surfY + h * 0.5, z),
+      radius: base * 0.9,
+      lethal
+    });
+  } else {
+    const y0 = getFloorY(x, z) + h * 0.35;
+    _spawnPolyRock(x, z, y0, base * 1.8, h * 0.65, base * 1.5, lethal, 1 + ((rng() * 2) | 0));
+  }
+}
+
+// ── DRIP ZONES — fewer, wider “rooms” so formations read as one cave, not scattered kits. ──
+// Lethal reds concentrate toward the gallery edge (walls); the middle stays more navigable.
+for (let di = 0; di < 7; di++) {
+  const zx     = (rng()-0.5) * (CAVE_HALF*2 - 20);
+  const zz     = (rng()-0.5) * (CAVE_HALF*2 - 20);
+  const spread = 9 + rng() * 14;
+  const count  = 6 + Math.floor(rng() * 7);
 
   for (let i = 0; i < count; i++) {
     const angle = rng() * Math.PI * 2;
@@ -412,21 +541,20 @@ for (let di = 0; di < 9; di++) {
     const x     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, zx + Math.cos(angle)*rad));
     const z     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, zz + Math.sin(angle)*rad));
 
-    // Stalactite from ceiling — ~55% lethal (pointed spikes are the main danger)
-    const h     = 1.4 + rng() * 5.8;
-    const base  = 0.06 + rng() * 0.52;
-    _spawnTite(x, z, true,  h, base, rng() < 0.55);
+    const edge = galleryEdge01(x, z);
+    const lethalCeil = rng() < 0.30 + edge * 0.52;
+    _spawnCeilingVariety(x, z, lethalCeil);
 
-    // Matching stalagmite rising below from the drip (~75% form one, ~50% lethal)
-    if (rng() > 0.25) {
-      const mh = h * (0.3 + rng() * 0.8);
-      const mb = base * (0.5 + rng() * 0.9);
-      _spawnTite(x + (rng()-0.5)*0.5, z + (rng()-0.5)*0.5, false, mh, mb, rng() < 0.50);
+    if (rng() > 0.42) {
+      const x2 = x + (rng() - 0.5) * 0.45;
+      const z2 = z + (rng() - 0.5) * 0.45;
+      const lethalFloor = rng() < 0.24 + galleryEdge01(x2, z2) * 0.46;
+      _spawnFloorVariety(x2, z2, lethalFloor);
     }
   }
 
-  // 0–2 columns per zone — anchored to actual floor/ceiling surfaces
-  const colCount = Math.floor(rng() * 2.6);
+  // 0–1 column per zone (massive verticals, not many small posts)
+  const colCount = Math.floor(rng() * 1.35);
   for (let ci = 0; ci < colCount; ci++) {
     const cx    = Math.max(-CAVE_HALF+3, Math.min(CAVE_HALF-3, zx + (rng()-0.5)*spread*0.55));
     const cz    = Math.max(-CAVE_HALF+3, Math.min(CAVE_HALF-3, zz + (rng()-0.5)*spread*0.55));
@@ -461,66 +589,110 @@ for (let di = 0; di < 9; di++) {
   }
 }
 
-// ── BREAKDOWN FIELDS — collapsed ceiling zones ────────────────────
-// Where the cave ceiling has fractured over time, large angular blocks
-// pile up on the floor.  Concentrated in 4 zones rather than scattered.
-for (let fi = 0; fi < 4; fi++) {
-  const bfx    = (rng()-0.5) * (CAVE_HALF*2 - 14);
-  const bfz    = (rng()-0.5) * (CAVE_HALF*2 - 14);
-  const bcount = 5 + Math.floor(rng() * 10);
+// ── BREAKDOWN FIELDS — two wide rubble heaps (gallery edges), varied fractured shapes. ──
+for (let fi = 0; fi < 2; fi++) {
+  const bfx    = (fi === 0 ? -1 : 1) * (CAVE_HALF * 0.22 + rng() * 14);
+  const bfz    = (rng() - 0.5) * (CAVE_HALF * 2 - 22);
+  const bcount = 8 + Math.floor(rng() * 7);
 
   for (let i = 0; i < bcount; i++) {
     const angle = rng() * Math.PI * 2;
-    const rad   = rng() * 7;
+    const rad   = rng() * (11 + rng() * 8);
     const x     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, bfx + Math.cos(angle)*rad));
     const z     = Math.max(-CAVE_HALF+2, Math.min(CAVE_HALF-2, bfz + Math.sin(angle)*rad));
-    const s     = 0.4 + rng() * 2.8;
-    const geo   = rng() > 0.45
-      ? new THREE.DodecahedronGeometry(s, 0)
-      : new THREE.IcosahedronGeometry(s, 0);
-    // Lethal probability scales with sharpness: small shards nearly always lethal
-    const lethal = rng() < (s < 0.8 ? 0.85 : s < 1.5 ? 0.55 : 0.25);
-    const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
-    const yB = getFloorY(x, z) + s * 0.52;   // sit on actual displaced floor
-    m.position.set(x, yB, z);
-    m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
-    scene.add(m);
-    obstacleColliders.push({
-      type: 'sphere',
-      center: new THREE.Vector3(x, yB, z),
-      radius: s * 0.85, lethal
-    });
+    const s     = 0.45 + rng() * 2.6;
+    const edge = galleryEdge01(x, z);
+    const shard = s < 0.85 ? 0.82 : s < 1.45 ? 0.52 : 0.22;
+    const lethal = rng() < shard * (0.42 + edge * 0.58);
+    const yB = getFloorY(x, z) + s * 0.52;
+    const vk = (rng() * 5) | 0;
+    if (vk === 0) {
+      const geo = new THREE.DodecahedronGeometry(s, 0);
+      const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+      m.position.set(x, yB, z);
+      m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+      scene.add(m);
+      obstacleColliders.push({ type: 'sphere', center: new THREE.Vector3(x, yB, z), radius: s * 0.85, lethal });
+    } else if (vk === 1) {
+      const geo = new THREE.IcosahedronGeometry(s, 0);
+      const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+      m.position.set(x, yB, z);
+      m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+      scene.add(m);
+      obstacleColliders.push({ type: 'sphere', center: new THREE.Vector3(x, yB, z), radius: s * 0.82, lethal });
+    } else if (vk === 2) {
+      const t = s * 1.05;
+      const geo = new THREE.TetrahedronGeometry(t, 0);
+      const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+      m.position.set(x, yB, z);
+      m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+      scene.add(m);
+      obstacleColliders.push({ type: 'sphere', center: new THREE.Vector3(x, yB, z), radius: s * 0.78, lethal });
+    } else if (vk === 3) {
+      const geo = new THREE.BoxGeometry(s * 1.1, s * 0.75, s * 0.95);
+      const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
+      m.position.set(x, yB, z);
+      m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+      scene.add(m);
+      obstacleColliders.push({ type: 'sphere', center: new THREE.Vector3(x, yB, z), radius: s * 0.72, lethal });
+    } else {
+      _spawnPolyRock(x, z, yB, s * 1.05, s * 0.9, s * 0.95, lethal, 2);
+    }
   }
 }
 
-// ── SCATTERED FLOOR BOULDERS ──────────────────────────────────────
-for (let i = 0; i < 30; i++) {
-  const s = 0.22 + rng() * 1.5;
-  const x = (rng()-0.5) * (CAVE_HALF*2 - 4);
-  const z = (rng()-0.5) * (CAVE_HALF*2 - 4);
-  const lethal = rng() < 0.55;
-  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), lethal ? obstacleCaveMat : caveMat);
+// ── FLOOR BOULDERS — biased toward the perimeter so the core floor stays readable. ──
+for (let i = 0; i < 18; i++) {
+  const s = 0.24 + rng() * 1.45;
+  let x; let z;
+  if (i % 4 !== 0) {
+    const ang = rng() * Math.PI * 2;
+    const rad = (10 + rng() * 30) * (0.55 + rng() * 0.45);
+    x = Math.cos(ang) * rad;
+    z = Math.sin(ang) * rad;
+  } else {
+    x = (rng() - 0.5) * (CAVE_HALF * 2 - 4);
+    z = (rng() - 0.5) * (CAVE_HALF * 2 - 4);
+  }
+  x = Math.max(-CAVE_HALF + 2, Math.min(CAVE_HALF - 2, x));
+  z = Math.max(-CAVE_HALF + 2, Math.min(CAVE_HALF - 2, z));
+  const lethal = rng() < 0.36 + galleryEdge01(x, z) * 0.44;
   const yB = getFloorY(x, z) + s * 0.55;
-  m.position.set(x, yB, z);
-  m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
-  scene.add(m);
-  obstacleColliders.push({
-    type: 'sphere',
-    center: new THREE.Vector3(x, yB, z),
-    radius: s * 0.9, lethal
-  });
+  const bRoll = rng();
+  if (bRoll < 0.38) {
+    const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), lethal ? obstacleCaveMat : caveMat);
+    m.position.set(x, yB, z);
+    m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+    scene.add(m);
+    obstacleColliders.push({ type: 'sphere', center: new THREE.Vector3(x, yB, z), radius: s * 0.9, lethal });
+  } else if (bRoll < 0.62) {
+    const m = new THREE.Mesh(new THREE.OctahedronGeometry(s * 0.95, 0), lethal ? obstacleCaveMat : caveMat);
+    m.position.set(x, yB, z);
+    m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+    scene.add(m);
+    obstacleColliders.push({ type: 'sphere', center: new THREE.Vector3(x, yB, z), radius: s * 0.86, lethal });
+  } else if (bRoll < 0.82) {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(s * 0.35, s * 0.85, s * 1.1, 6), lethal ? obstacleCaveMat : caveMat);
+    m.position.set(x, yB, z);
+    m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
+    scene.add(m);
+    obstacleColliders.push({ type: 'sphere', center: new THREE.Vector3(x, yB, z), radius: s * 0.82, lethal });
+  } else {
+    _spawnPolyRock(x, z, yB, s * 1.1, s * 0.7, s * 1.05, lethal, 0);
+  }
 }
 
-// ── LARGE PILLARS with satellite cluster ─────────────────────────
-for (let i = 0; i < 8; i++) {
+// ── LARGE PILLARS — a few anchors that tie floor to ceiling (rest of room stays open). ──
+for (let i = 0; i < 5; i++) {
   const x = (rng()-0.5) * (CAVE_HALF*2 - 16);
   const z = (rng()-0.5) * (CAVE_HALF*2 - 16);
-  if (Math.abs(x) < 7 && Math.abs(z) < 7) { i--; continue; }
+  if (Math.abs(x) < 10 && Math.abs(z) < 10) { i--; continue; }
 
-  const baseR = 1.0 + rng() * 1.8;
+  const baseR = 1.05 + rng() * 1.95;
   const topR  = baseR * (0.06 + rng() * 0.28);
-  const h     = CAVE_H * (1.4 + rng() * 0.6);
-  const yC    = -CAVE_H + h * 0.5;
+  const h     = CAVE_H * (1.45 + rng() * 0.55);
+  const floorY = getFloorY(x, z);
+  const yC    = floorY + h * 0.5;
   const geo   = new THREE.CylinderGeometry(topR, baseR, h, 10);
   const m     = new THREE.Mesh(geo, caveMat);
   m.position.set(x, yC, z);
@@ -528,12 +700,12 @@ for (let i = 0; i < 8; i++) {
   scene.add(m);
   obstacleColliders.push({
     type: 'capsule',
-    a: new THREE.Vector3(x, yC - h*0.5, z),
-    b: new THREE.Vector3(x, yC + h*0.5, z),
+    a: new THREE.Vector3(x, floorY, z),
+    b: new THREE.Vector3(x, floorY + h, z),
     radius: baseR * 0.88, lethal: false
   });
 
-  const satCount = 3 + Math.floor(rng() * 4);
+  const satCount = 1 + Math.floor(rng() * 3);
   for (let k = 0; k < satCount; k++) {
     const ang  = (k / satCount) * Math.PI * 2 + rng() * 0.9;
     const dist = baseR * 1.15 + rng() * 2.8;
@@ -542,7 +714,7 @@ for (let i = 0; i < 8; i++) {
     const sh   = h * (0.10 + rng() * 0.60);
     const sbr  = baseR * (0.10 + rng() * 0.42);
     const str  = sbr * (0.03 + rng() * 0.22);
-    const syC  = -CAVE_H + sh * 0.5;
+    const syC  = getFloorY(sx, sz) + sh * 0.5;
     const sm   = new THREE.Mesh(new THREE.CylinderGeometry(str, sbr, sh, 7), caveMat);
     sm.position.set(sx, syC, sz);
     sm.rotation.y = rng() * Math.PI;
@@ -565,11 +737,12 @@ const curtainMat = new THREE.ShaderMaterial({
   uniforms: { uPulses: { value: uPulseVec4 }, uCamPos: { value: camera.position } },
   side: THREE.DoubleSide
 });
-for (let i = 0; i < 8; i++) {
-  const cx    = (rng()-0.5) * (CAVE_HALF*2 - 12);
-  const cz    = (rng()-0.5) * (CAVE_HALF*2 - 12);
-  const cw    = 1.8 + rng() * 6.5;
-  const ch    = 1.0 + rng() * 4.5;
+for (let i = 0; i < 4; i++) {
+  const bias = (rng() - 0.5) * 1.65;
+  const cx    = Math.max(-CAVE_HALF + 8, Math.min(CAVE_HALF - 8, (rng() - 0.5) * (CAVE_HALF * 2 - 14) + bias * CAVE_HALF * 0.35));
+  const cz    = Math.max(-CAVE_HALF + 8, Math.min(CAVE_HALF - 8, (rng() - 0.5) * (CAVE_HALF * 2 - 14) - bias * CAVE_HALF * 0.35));
+  const cw    = 2.4 + rng() * 7.5;
+  const ch    = 1.2 + rng() * 5.0;
   const cAng  = rng() * Math.PI;
   const cgeo  = new THREE.PlaneGeometry(cw, ch, Math.max(4, cw*3|0), Math.max(3, ch*3|0));
   // Gentle ripple along the curtain surface
@@ -577,7 +750,8 @@ for (let i = 0; i < 8; i++) {
     (_caveNoise2(u*1.3 + cx*0.18 + i*4.1, v*0.85 + cz*0.18) - 0.5) * 0.38
   );
   const cm = new THREE.Mesh(cgeo, curtainMat);
-  cm.position.set(cx, CAVE_H - ch*0.5, cz);
+  const ceilY = getCeilY(cx, cz);
+  cm.position.set(cx, ceilY - ch * 0.5, cz);
   cm.rotation.y = cAng;
   scene.add(cm);
   // Curtains are passable — no collider
@@ -598,8 +772,12 @@ function findSafeSpawn() {
       for (let step = 0; step < 24; step++) {
         const a = (step / 24) * Math.PI * 2;
         _spawnTest.set(Math.cos(a) * R, y, Math.sin(a) * R);
-        _spawnTest.x = Math.max(-CAVE_HALF + 2.5, Math.min(CAVE_HALF - 2.5, _spawnTest.x));
-        _spawnTest.z = Math.max(-CAVE_HALF + 2.5, Math.min(CAVE_HALF - 2.5, _spawnTest.z));
+        _spawnTest.x = Math.max(-CAVE_HALF + 3, Math.min(CAVE_HALF - 3, _spawnTest.x));
+        _spawnTest.z = Math.max(-CAVE_HALF + 3, Math.min(CAVE_HALF - 3, _spawnTest.z));
+        constrainPlayerToWallShell(_spawnTest, SPAWN_CLEAR_R);
+        const fY = getFloorY(_spawnTest.x, _spawnTest.z) + SPAWN_CLEAR_R;
+        const cY = getCeilY(_spawnTest.x, _spawnTest.z) - SPAWN_CLEAR_R;
+        _spawnTest.y = Math.max(fY, Math.min(cY, _spawnTest.y));
         if (spawnFree(_spawnTest, SPAWN_CLEAR_R)) return _spawnTest.clone();
       }
     }
@@ -643,11 +821,11 @@ let   lastSonarTime  = -999;
 let   sonarCharge    = 1.0;
 
 const PROJ_SPEED     = 62;
-const PROJ_MAX_DIST  = 110;
+const PROJ_MAX_DIST  = 200;
 
 const raycaster = new THREE.Raycaster();
 raycaster.near = 0.02;
-raycaster.far  = 220;
+raycaster.far  = 320;
 
 const boltGeoms = {
   core: new THREE.IcosahedronGeometry(0.085, 1),
@@ -1075,21 +1253,19 @@ function updatePlayer(dt) {
   flapPhase += dt * (len > 0 ? 5.5 : 2.5);
   player.position.y += Math.sin(flapPhase) * (len > 0 ? 0.014 : 0.006);
 
-  // Clamp to cave bounds (floor/ceiling use displaced surface height)
-  player.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.x));
-  player.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.z));
-  {
+  for (let pass = 0; pass < 8; pass++) {
+    constrainPlayerToWallShell(player.position, PLAYER_COLLIDE_R);
     const fY = getFloorY(player.position.x, player.position.z) + PLAYER_COLLIDE_R;
-    const cY = getCeilY (player.position.x, player.position.z) - PLAYER_COLLIDE_R;
+    const cY = getCeilY(player.position.x, player.position.z) - PLAYER_COLLIDE_R;
     player.position.y = Math.max(fY, Math.min(cY, player.position.y));
   }
 
   resolveObstacleCollisions();
-  player.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.x));
-  player.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.z));
-  {
+
+  for (let pass = 0; pass < 4; pass++) {
+    constrainPlayerToWallShell(player.position, PLAYER_COLLIDE_R);
     const fY = getFloorY(player.position.x, player.position.z) + PLAYER_COLLIDE_R;
-    const cY = getCeilY (player.position.x, player.position.z) - PLAYER_COLLIDE_R;
+    const cY = getCeilY(player.position.x, player.position.z) - PLAYER_COLLIDE_R;
     player.position.y = Math.max(fY, Math.min(cY, player.position.y));
   }
 
