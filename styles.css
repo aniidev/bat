@@ -9,15 +9,39 @@ canvas { display: block; }
 }
 
 #crosshair {
-  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-  width: 14px; height: 14px; pointer-events: none;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  /* Container size */
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
 }
-#crosshair::before, #crosshair::after {
-  content: ''; position: absolute; background: rgba(0,170,255,0.7);
-}
-#crosshair::before { width: 2px; height: 14px; left: 6px; top: 0; }
-#crosshair::after  { width: 14px; height: 2px; left: 0; top: 6px; }
 
+#crosshair::before, #crosshair::after {
+  content: '';
+  position: absolute;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+/* Vertical line: 1px wide, 6px tall */
+/* Centered: left = (container width / 2) - (line width / 2) = 5 - 0.5 = 4.5px */
+#crosshair::before {
+  width: 1px;
+  height: 6px;
+  left: 4.5px; 
+  top: 2px;
+}
+
+/* Horizontal line: 6px wide, 1px tall */
+/* Centered: top = (container height / 2) - (line height / 2) = 5 - 0.5 = 4.5px */
+#crosshair::after {
+  width: 6px;
+  height: 1px;
+  left: 2px;
+  top: 4.5px;
+}
 #sonar-bar-wrap {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   width: 180px; text-align: center; pointer-events: none;
@@ -26,11 +50,6 @@ canvas { display: block; }
 #sonar-bar   { width: 180px; height: 8px; background: #001a2a; border: 1px solid #0af3; }
 #sonar-fill  { height: 100%; background: linear-gradient(90deg, #005, #0af); width: 100%; box-shadow: 0 0 6px #0af; }
 
-#wing-left, #wing-right {
-  position: fixed; bottom: 0; width: 40%; height: 35%; pointer-events: none; opacity: 0.9;
-}
-#wing-left  { left: 0;  background: radial-gradient(ellipse at 100% 100%, #05001a 0%, transparent 65%); }
-#wing-right { right: 0; background: radial-gradient(ellipse at 0%   100%, #05001a 0%, transparent 65%); }
 
 #flash {
   position: fixed; inset: 0; pointer-events: none; opacity: 0;
