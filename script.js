@@ -365,6 +365,37 @@ function constrainPlayerToWallShell(pos, r) {
   if (px > xMax) pos.x = xMax;
 }
 
+function clampPointToFloorCeiling(pos, r) {
+  const fY = getFloorY(pos.x, pos.z) + r;
+  const cY = getCeilY(pos.x, pos.z) - r;
+  pos.y = Math.max(fY, Math.min(cY, pos.y));
+}
+
+/** Used for camera & spawn checks — same bounds as player shell, smaller clearance. */
+function isPointInsideCaveShell(px, py, pz, r) {
+  const zMin = -CAVE_HALF + _wallRockDisp(px, py, 0.0, 0.0) + r;
+  const zMax = CAVE_HALF - _wallRockDisp(-px, py, 5.3, 2.1) - r;
+  const xMin = -CAVE_HALF + _wallRockDisp(-pz, py, 1.7, 7.4) + r;
+  const xMax = CAVE_HALF - _wallRockDisp(pz, py, 9.2, 3.8) - r;
+  const fY = getFloorY(px, pz) + r;
+  const cY = getCeilY(px, pz) - r;
+  return (
+    px >= xMin - 1e-4 &&
+    px <= xMax + 1e-4 &&
+    pz >= zMin - 1e-4 &&
+    pz <= zMax + 1e-4 &&
+    py >= fY - 1e-4 &&
+    py <= cY + 1e-4
+  );
+}
+
+function snapPointIntoCaveShell(pos, r) {
+  for (let i = 0; i < 10; i++) {
+    constrainPlayerToWallShell(pos, r);
+    clampPointToFloorCeiling(pos, r);
+  }
+}
+
 // Floor (150×150 verts)
 const floorGeo = new THREE.PlaneGeometry(CAVE_HALF*2, CAVE_HALF*2, 150, 150);
 _displaceZ(floorGeo, (lx, ly) => _floorDisp(lx, -ly));
@@ -765,24 +796,37 @@ function findSafeSpawn() {
     }
     return true;
   }
-  const rings = [0, 1.8, 3.5, 5.2, 7, 9, 11, 13, 15];
-  for (let yi = 0; yi < 12; yi++) {
-    const y = -CAVE_H + 2.2 + (yi / 11) * (CAVE_H * 2 - 4.4);
-    for (const R of rings) {
-      for (let step = 0; step < 24; step++) {
-        const a = (step / 24) * Math.PI * 2;
-        _spawnTest.set(Math.cos(a) * R, y, Math.sin(a) * R);
-        _spawnTest.x = Math.max(-CAVE_HALF + 3, Math.min(CAVE_HALF - 3, _spawnTest.x));
-        _spawnTest.z = Math.max(-CAVE_HALF + 3, Math.min(CAVE_HALF - 3, _spawnTest.z));
-        constrainPlayerToWallShell(_spawnTest, SPAWN_CLEAR_R);
-        const fY = getFloorY(_spawnTest.x, _spawnTest.z) + SPAWN_CLEAR_R;
-        const cY = getCeilY(_spawnTest.x, _spawnTest.z) - SPAWN_CLEAR_R;
-        _spawnTest.y = Math.max(fY, Math.min(cY, _spawnTest.y));
+  // Prefer vertical **middle** of the air column at each (x,z), then try other heights.
+  const yFracs = [0.5, 0.44, 0.56, 0.36, 0.64, 0.28, 0.72, 0.2, 0.8, 0.12, 0.88, 0.06, 0.94];
+  const rings = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18];
+  for (const R of rings) {
+    for (let step = 0; step < 28; step++) {
+      const a = (step / 28) * Math.PI * 2;
+      _spawnTest.set(Math.cos(a) * R, 0, Math.sin(a) * R);
+      _spawnTest.x = Math.max(-CAVE_HALF + 3, Math.min(CAVE_HALF - 3, _spawnTest.x));
+      _spawnTest.z = Math.max(-CAVE_HALF + 3, Math.min(CAVE_HALF - 3, _spawnTest.z));
+      constrainPlayerToWallShell(_spawnTest, SPAWN_CLEAR_R);
+      const fY = getFloorY(_spawnTest.x, _spawnTest.z) + SPAWN_CLEAR_R;
+      const cY = getCeilY(_spawnTest.x, _spawnTest.z) - SPAWN_CLEAR_R;
+      const span = cY - fY;
+      if (span < 0.6) continue;
+      for (let fi = 0; fi < yFracs.length; fi++) {
+        _spawnTest.y = fY + span * yFracs[fi];
+        if (!isPointInsideCaveShell(_spawnTest.x, _spawnTest.y, _spawnTest.z, SPAWN_CLEAR_R)) {
+          snapPointIntoCaveShell(_spawnTest, SPAWN_CLEAR_R);
+        }
         if (spawnFree(_spawnTest, SPAWN_CLEAR_R)) return _spawnTest.clone();
       }
     }
   }
-  return new THREE.Vector3(0, CAVE_H - 3, 0);
+  _spawnTest.set(0, 0, 0);
+  snapPointIntoCaveShell(_spawnTest, SPAWN_CLEAR_R);
+  const f0 = getFloorY(0, 0) + SPAWN_CLEAR_R;
+  const c0 = getCeilY(0, 0) - SPAWN_CLEAR_R;
+  _spawnTest.y = (f0 + c0) * 0.5;
+  clampPointToFloorCeiling(_spawnTest, SPAWN_CLEAR_R);
+  if (spawnFree(_spawnTest, SPAWN_CLEAR_R)) return _spawnTest.clone();
+  return new THREE.Vector3(0, (f0 + c0) * 0.5, 0);
 }
 
 player.position.copy(findSafeSpawn());
@@ -1150,9 +1194,12 @@ let flapPhase = 0;
 const _camEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 const _camForward = new THREE.Vector3();
 const _camLook = new THREE.Vector3();
+const _camDelta = new THREE.Vector3();
 const CAM_DIST = 6.2;
 const CAM_HEIGHT = 1.35;
 const CAM_LOOK_AHEAD = 1.35;
+/** Keep lens inside rock shell so you never see cave surfaces from the outside (avoids reversed / missing shading). */
+const CAM_SHELL_MARGIN = 0.48;
 
 const _sepObs = new THREE.Vector3();
 
@@ -1220,8 +1267,30 @@ function resolveObstacleCollisions() {
 function updateThirdPersonCamera() {
   _camEuler.set(pitch, yaw, 0);
   _camForward.set(0, 0, -1).applyEuler(_camEuler);
-  camera.position.copy(player.position).addScaledVector(_camForward, -CAM_DIST);
-  camera.position.y += CAM_HEIGHT;
+  _camDelta.copy(_camForward).multiplyScalar(-CAM_DIST);
+  _camDelta.y += CAM_HEIGHT;
+
+  let t = 1.0;
+  for (let iter = 0; iter < 26; iter++) {
+    camera.position.copy(player.position).addScaledVector(_camDelta, t);
+    snapPointIntoCaveShell(camera.position, CAM_SHELL_MARGIN);
+    if (isPointInsideCaveShell(camera.position.x, camera.position.y, camera.position.z, CAM_SHELL_MARGIN)) {
+      break;
+    }
+    t *= 0.88;
+    if (t < 0.06) {
+      camera.position.copy(player.position);
+      camera.position.y += CAM_HEIGHT * 0.55;
+      snapPointIntoCaveShell(camera.position, CAM_SHELL_MARGIN);
+      break;
+    }
+  }
+  for (let k = 0; k < 5; k++) {
+    if (isPointInsideCaveShell(camera.position.x, camera.position.y, camera.position.z, CAM_SHELL_MARGIN)) break;
+    camera.position.lerp(player.position, 0.45);
+    snapPointIntoCaveShell(camera.position, CAM_SHELL_MARGIN);
+  }
+
   _camLook.copy(player.position).addScaledVector(_camForward, CAM_LOOK_AHEAD);
   _camLook.y += 0.42;
   camera.up.set(0, 1, 0);
@@ -1255,18 +1324,14 @@ function updatePlayer(dt) {
 
   for (let pass = 0; pass < 8; pass++) {
     constrainPlayerToWallShell(player.position, PLAYER_COLLIDE_R);
-    const fY = getFloorY(player.position.x, player.position.z) + PLAYER_COLLIDE_R;
-    const cY = getCeilY(player.position.x, player.position.z) - PLAYER_COLLIDE_R;
-    player.position.y = Math.max(fY, Math.min(cY, player.position.y));
+    clampPointToFloorCeiling(player.position, PLAYER_COLLIDE_R);
   }
 
   resolveObstacleCollisions();
 
   for (let pass = 0; pass < 4; pass++) {
     constrainPlayerToWallShell(player.position, PLAYER_COLLIDE_R);
-    const fY = getFloorY(player.position.x, player.position.z) + PLAYER_COLLIDE_R;
-    const cY = getCeilY(player.position.x, player.position.z) - PLAYER_COLLIDE_R;
-    player.position.y = Math.max(fY, Math.min(cY, player.position.y));
+    clampPointToFloorCeiling(player.position, PLAYER_COLLIDE_R);
   }
 
   player.rotation.order = 'YXZ';
