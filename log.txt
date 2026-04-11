@@ -1,0 +1,9 @@
+TO DO:
+Throw a projectile where the cursor is pointing and start the reverberations off there not just from where the player is currently.
+Allow 3D models be rendered
+Get a bat 3D model and make it third person and animated flapping
+Add enemies
+Make scary or a puzzle
+Make levels / different environments not just rectangular
+
+UPDATES:
