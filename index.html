@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Bat — Echolocation</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="overlay">
+  <h1>&#x1F987; ECHOLOCATION</h1>
+  <p>WASD — Fly</p>
+  <p>MOUSE — Look</p>
+  <p>Q / SPACE — Up &nbsp;&nbsp; E / CTRL — Down</p>
+  <p>CLICK — Emit Sonar Pulse</p>
+  <p class="go">[ CLICK ANYWHERE TO BEGIN ]</p>
+</div>
+
+<div id="ui" style="display:none">CLICK to echolocate</div>
+<div id="crosshair" style="display:none"></div>
+
+<div id="sonar-bar-wrap" style="display:none">
+  <div id="sonar-label">SONAR</div>
+  <div id="sonar-bar"><div id="sonar-fill"></div></div>
+</div>
+
+<div id="wing-left"></div>
+<div id="wing-right"></div>
+<div id="flash"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="script.js"></script>
+
+</body>
+</html>

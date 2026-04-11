@@ -1,0 +1,50 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; overflow: hidden; }
+canvas { display: block; }
+
+#ui {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  color: #3af; font-family: monospace; font-size: 13px; text-align: center;
+  text-shadow: 0 0 8px #0af; pointer-events: none; letter-spacing: 1px;
+}
+
+#crosshair {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 14px; height: 14px; pointer-events: none;
+}
+#crosshair::before, #crosshair::after {
+  content: ''; position: absolute; background: rgba(0,170,255,0.7);
+}
+#crosshair::before { width: 2px; height: 14px; left: 6px; top: 0; }
+#crosshair::after  { width: 14px; height: 2px; left: 0; top: 6px; }
+
+#sonar-bar-wrap {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  width: 180px; text-align: center; pointer-events: none;
+}
+#sonar-label { color: #3af; font-family: monospace; font-size: 11px; margin-bottom: 4px; letter-spacing: 2px; text-shadow: 0 0 6px #0af; }
+#sonar-bar   { width: 180px; height: 8px; background: #001a2a; border: 1px solid #0af3; }
+#sonar-fill  { height: 100%; background: linear-gradient(90deg, #005, #0af); width: 100%; box-shadow: 0 0 6px #0af; }
+
+#wing-left, #wing-right {
+  position: fixed; bottom: 0; width: 40%; height: 35%; pointer-events: none; opacity: 0.9;
+}
+#wing-left  { left: 0;  background: radial-gradient(ellipse at 100% 100%, #05001a 0%, transparent 65%); }
+#wing-right { right: 0; background: radial-gradient(ellipse at 0%   100%, #05001a 0%, transparent 65%); }
+
+#flash {
+  position: fixed; inset: 0; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse at 50% 50%, rgba(0,120,255,0.25) 0%, transparent 70%);
+  transition: opacity 0.05s ease-out;
+}
+
+#overlay {
+  position: fixed; inset: 0; background: #000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: #3af; font-family: monospace; text-shadow: 0 0 12px #0af;
+}
+#overlay h1  { font-size: 2.4rem; letter-spacing: 6px; margin-bottom: 16px; }
+#overlay p   { font-size: 0.82rem; opacity: 0.75; margin: 4px 0; letter-spacing: 1px; }
+#overlay .go { margin-top: 28px; font-size: 0.95rem; animation: blink 1.4s ease-in-out infinite; }
+
+@keyframes blink { 0%,100%{opacity:0.3} 50%{opacity:1} }
