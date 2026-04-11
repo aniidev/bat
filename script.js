@@ -158,6 +158,69 @@ const fragShader = /* glsl */`
   }
 `;
 
+// Same sonar grid + pulse logic as the cave shell, but red lattice / shock (obstacles only).
+const fragShaderObstacle = /* glsl */`
+  #define MAX_P ${MAX_PULSES}
+
+  uniform vec4 uPulses[MAX_P];
+  uniform vec3 uCamPos;
+
+  varying vec3 vWorldPos;
+
+  float gridLine(float v, float scale, float lw) {
+    float f = fract(v * scale);
+    float d = min(f, 1.0 - f);
+    return 1.0 - smoothstep(0.0, lw, d);
+  }
+
+  void main() {
+    const float TRAIL  = 70.0;
+    const float GSCALE = 0.75;
+    const float LW     = 0.055;
+
+    float lx   = gridLine(vWorldPos.x, GSCALE, LW);
+    float ly   = gridLine(vWorldPos.y, GSCALE, LW);
+    float lz   = gridLine(vWorldPos.z, GSCALE, LW);
+    float grid = max(lx, max(ly, lz));
+
+    float totalGrid  = 0.0;
+    float totalFill  = 0.0;
+    float totalFront = 0.0;
+
+    for (int i = 0; i < MAX_P; i++) {
+      float radius = uPulses[i].w;
+      if (radius < 0.0) continue;
+
+      float dist   = distance(vWorldPos, uPulses[i].xyz);
+      float behind = radius - dist;
+
+      if (behind > 0.0 && behind < TRAIL) {
+        float t     = behind / TRAIL;
+        float fade  = (1.0 - t) * (1.0 - t);
+        float front = exp(-behind * 0.55);
+
+        totalGrid  = max(totalGrid,  grid * fade);
+        totalFill  = max(totalFill,  fade * 0.07);
+        totalFront = max(totalFront, front);
+      }
+    }
+
+    vec3 baseCol  = vec3(0.016, 0.005, 0.005);
+    vec3 gridCol  = vec3(1.0,   0.14,  0.06);
+    vec3 frontCol = vec3(1.0,   0.52,  0.38);
+
+    vec3 col = baseCol;
+    col += gridCol  * (totalGrid * 1.6 + totalFill);
+    col += frontCol * (totalFront * totalFront * 3.2);
+
+    float fogD = distance(vWorldPos, uCamPos);
+    float fog  = 1.0 - exp(-fogD * 0.033);
+    col = mix(col, vec3(0.0), clamp(fog, 0.0, 1.0));
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
 // Uniform arrays — updated every frame from the JS pulse list
 const uPulseVec4 = [];
 for (let i = 0; i < MAX_PULSES; i++) uPulseVec4.push(new THREE.Vector4(0, 0, 0, -1));
@@ -171,8 +234,17 @@ const caveMat = new THREE.ShaderMaterial({
   }
 });
 
+const obstacleCaveMat = new THREE.ShaderMaterial({
+  vertexShader:   vertShader,
+  fragmentShader: fragShaderObstacle,
+  uniforms: {
+    uPulses: { value: uPulseVec4 },
+    uCamPos: { value: camera.position }
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════
-//  CAVE GEOMETRY  (everything shares caveMat so the shader covers all)
+//  CAVE GEOMETRY  (shell: caveMat; obstacles: same grid shader, red tint)
 // ═══════════════════════════════════════════════════════════════════════
 const CAVE_HALF = 38;
 const CAVE_H    = 9;
@@ -203,6 +275,19 @@ const rng = (() => {
   return () => { s ^= s<<13; s ^= s>>17; s ^= s<<5; return (s>>>0)/4294967296; };
 })();
 
+/** World-space bounding spheres for static obstacles (player + sonar bolts). */
+const obstacleColliders = [];
+const _obsBox = new THREE.Box3();
+const _obsSph = new THREE.Sphere();
+
+function registerObstacleCollider(mesh) {
+  mesh.updateMatrixWorld(true);
+  _obsBox.setFromObject(mesh);
+  _obsBox.getBoundingSphere(_obsSph);
+  const r = Math.max(_obsSph.radius, 0.12);
+  obstacleColliders.push({ center: _obsSph.center.clone(), radius: r });
+}
+
 // Stalactites & stalagmites
 for (let i = 0; i < 90; i++) {
   const x = (rng()-0.5)*(CAVE_HALF*2 - 4);
@@ -214,9 +299,10 @@ for (let i = 0; i < 90; i++) {
   const top  = rng() > 0.5;   // stalactite from ceiling
 
   const geo = new THREE.CylinderGeometry(top ? 0.02 : base, top ? base : 0.02, h, 6);
-  const m   = new THREE.Mesh(geo, caveMat);
+  const m   = new THREE.Mesh(geo, obstacleCaveMat);
   m.position.set(x, top ? CAVE_H - h*0.5 : -CAVE_H + h*0.5, z);
   scene.add(m);
+  registerObstacleCollider(m);
 }
 
 // Boulders / rocks
@@ -224,16 +310,17 @@ for (let i = 0; i < 55; i++) {
   const s = 0.25 + rng()*1.9;
   const x = (rng()-0.5)*(CAVE_HALF*2-4);
   const z = (rng()-0.5)*(CAVE_HALF*2-4);
-  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), caveMat);
+  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), obstacleCaveMat);
   m.position.set(x, -CAVE_H + s*0.55, z);
   m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
   scene.add(m);
+  registerObstacleCollider(m);
 }
 
 // Mid-air crystal clusters
 for (let i = 0; i < 25; i++) {
   const s = 0.15 + rng()*0.7;
-  const m = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), caveMat);
+  const m = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), obstacleCaveMat);
   m.position.set(
     (rng()-0.5)*(CAVE_HALF*2-6),
     (rng()-0.5)*(CAVE_H*1.6),
@@ -241,12 +328,14 @@ for (let i = 0; i < 25; i++) {
   );
   m.rotation.set(rng()*Math.PI, rng()*Math.PI, rng()*Math.PI);
   scene.add(m);
+  registerObstacleCollider(m);
 }
 
-// Cave meshes only — used to raycast sonar bolts (bat uses different materials).
+// Cave shell + red obstacles — sonar bolts raycast against both.
 const sonarRayTargets = [];
 scene.traverse((o) => {
-  if (o.isMesh && o.material === caveMat) sonarRayTargets.push(o);
+  if (!o.isMesh) return;
+  if (o.material === caveMat || o.material === obstacleCaveMat) sonarRayTargets.push(o);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -557,6 +646,30 @@ const CAM_DIST = 6.2;
 const CAM_HEIGHT = 1.35;
 const CAM_LOOK_AHEAD = 1.35;
 
+const PLAYER_COLLIDE_R = 0.52;
+const _sepObs = new THREE.Vector3();
+
+function resolveObstacleCollisions() {
+  const p = player.position;
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < obstacleColliders.length; i++) {
+      const c = obstacleColliders[i];
+      _sepObs.copy(p).sub(c.center);
+      const dist = _sepObs.length();
+      const need = c.radius + PLAYER_COLLIDE_R;
+      if (dist < 1e-6) {
+        _sepObs.set(0, 1, 0);
+        p.addScaledVector(_sepObs, need);
+        continue;
+      }
+      if (dist < need) {
+        _sepObs.multiplyScalar((need - dist) / dist);
+        p.add(_sepObs);
+      }
+    }
+  }
+}
+
 function updateThirdPersonCamera() {
   _camEuler.set(pitch, yaw, 0);
   _camForward.set(0, 0, -1).applyEuler(_camEuler);
@@ -593,6 +706,11 @@ function updatePlayer(dt) {
   player.position.y += Math.sin(flapPhase) * (len > 0 ? 0.014 : 0.006);
 
   // Clamp to cave bounds
+  player.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.x));
+  player.position.y = Math.max(-CAVE_H+1,    Math.min(CAVE_H-1,    player.position.y));
+  player.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.z));
+
+  resolveObstacleCollisions();
   player.position.x = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.x));
   player.position.y = Math.max(-CAVE_H+1,    Math.min(CAVE_H-1,    player.position.y));
   player.position.z = Math.max(-CAVE_HALF+1, Math.min(CAVE_HALF-1, player.position.z));
