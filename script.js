@@ -443,6 +443,17 @@ const rng = (() => {
   return () => { s ^= s<<13; s ^= s>>17; s ^= s<<5; return (s>>>0)/4294967296; };
 })();
 
+/** Returns a new THREE.Vector3 placed exactly `distance` units from `origin` in a random direction. */
+function genRandomCoord(origin, xzdistance) {
+  const x = Math.random(-CAVE_HALF, CAVE_HALF);
+  const z = Math.sqrt(xzdistance**2 - Math.random(-CAVE_HALF, CAVE_HALF)**2);
+  raycaster.set(new THREE.Vector3(x, 0, z), new THREE.Vector3(0, -1, 0));
+  const maxy = raycaster.intersectObjects(scene.children, true)[0].point.y;
+  raycaster.set(new THREE.Vector3(x, 0, z), new THREE.Vector3(0, 1, 0));
+  const miny = raycaster.intersectObjects(scene.children, true)[0].point.y;
+  return new THREE.Vector3(x, Math.random(miny, maxy), z);
+}
+
 const obstacleColliders = [];
 
 /** 0 = open gallery center, 1 = near perimeter — one coherent fly space, danger on the rim. */
@@ -1428,8 +1439,9 @@ function makeHawkTexture() {
 
 const HAWK_COLLIDE_R = 1.0;
 const _hawks = [];
+const numHawks = 5;
 
-for (let hi = 0; hi < 3; hi++) {
+for (let hi = 0; hi < numHawks; hi++) {
   const hx = (rng() - 0.5) * (CAVE_HALF * 2 - 16);
   const hz = (rng() - 0.5) * (CAVE_HALF * 2 - 16);
   const hy = getFloorY(hx, hz) + 3.5 + rng() * 3.5;
@@ -1447,30 +1459,69 @@ for (let hi = 0; hi < 3; hi++) {
 
   _hawks.push({
     sprite,
-    initPos:    new THREE.Vector3(hx, hy, hz),
-    alerted:    false,
-    alertTimer: 0,
+    initPos:      new THREE.Vector3(hx, hy, hz),
+    alerted:      false,
+    alertTimer:   0,
+    path:         null,
+    pathWaypoint: 0,
+    pathTimer:    0,
   });
 }
 
 function alertEnemies() {
   for (const h of _hawks) {
     h.alerted    = true;
-    h.alertTimer = 5.0;
+    h.alertTimer = 10.0;
   }
 }
 
 const _hawkDir = new THREE.Vector3();
+const HAWK_SPEED = 7;
+const HAWK_PATH_INTERVAL = 1.0; // seconds between path recomputes
+const HAWK_WP_RADIUS = 0.6;     // XZ distance to advance to next waypoint
 
 function updateHawks(dt) {
   for (const h of _hawks) {
     if (h.alerted) {
       h.alertTimer -= dt;
-      if (h.alertTimer <= 0) h.alerted = false;
-      // Swoop toward player
-      _hawkDir.subVectors(player.position, h.sprite.position);
-      const dist = _hawkDir.length();
-      if (dist > 0.1) h.sprite.position.addScaledVector(_hawkDir.normalize(), 7 * dt);
+      if (h.alertTimer <= 0) {
+        h.alerted = false;
+        h.path = null;
+        h.pathTimer = 0;
+        continue;
+      }
+
+      // Recompute path periodically or when current path is exhausted
+      h.pathTimer -= dt;
+      if (navmesh && (!h.path || h.pathWaypoint >= h.path.length || h.pathTimer <= 0)) {
+        const groupID = pathfinding.getGroup(ZONE, h.sprite.position);
+        h.path = (groupID != null)
+          ? (pathfinding.findPath(h.sprite.position, player.position, ZONE, groupID) || null)
+          : null;
+        h.pathWaypoint = 0;
+        h.pathTimer = HAWK_PATH_INTERVAL;
+      }
+
+      if (h.path && h.pathWaypoint < h.path.length) {
+        // Follow navmesh waypoints in XZ, chase player Y for flying behaviour
+        const wp = h.path[h.pathWaypoint];
+        _hawkDir.set(
+          wp.x - h.sprite.position.x,
+          player.position.y - h.sprite.position.y,
+          wp.z - h.sprite.position.z
+        );
+        const dist = _hawkDir.length();
+        if (dist > 0.01) h.sprite.position.addScaledVector(_hawkDir.normalize(), HAWK_SPEED * dt);
+        // Advance waypoint once close enough in XZ
+        if (Math.hypot(wp.x - h.sprite.position.x, wp.z - h.sprite.position.z) < HAWK_WP_RADIUS) {
+          h.pathWaypoint++;
+        }
+      } else {
+        // Fallback: straight-line swoop (navmesh not ready or no path found)
+        _hawkDir.subVectors(player.position, h.sprite.position);
+        const dist = _hawkDir.length();
+        if (dist > 0.1) h.sprite.position.addScaledVector(_hawkDir.normalize(), HAWK_SPEED * dt);
+      }
     }
 
     // Lethal contact
@@ -1484,8 +1535,11 @@ function updateHawks(dt) {
 function resetHawks() {
   for (const h of _hawks) {
     h.sprite.position.copy(h.initPos);
-    h.alerted    = false;
-    h.alertTimer = 0;
+    h.alerted      = false;
+    h.alertTimer   = 0;
+    h.path         = null;
+    h.pathWaypoint = 0;
+    h.pathTimer    = 0;
   }
 }
 
