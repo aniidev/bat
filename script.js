@@ -1482,6 +1482,13 @@ let playerWon  = false;
 document.addEventListener('keydown', e => { keys[e.code] = true;  });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
 
+/** True while the controls / sonar tutorial is on screen before the fade-out (don’t start HUD yet). */
+function isTutorialIntroShowing() {
+  const tut = document.getElementById('tutorial');
+  if (!tut) return false;
+  return tut.classList.contains('visible') && !tut.classList.contains('fade-out');
+}
+
 function _startGame() {
   if (gameStarted || playerDead) return;
   gameStarted = true;
@@ -1494,6 +1501,7 @@ function _startGame() {
 
 document.addEventListener('click', () => {
   if (playerDead) return;
+  if (isTutorialIntroShowing()) return;
   // Start the game immediately on click — pointer lock is optional (better UX when available).
   _startGame();
   if (!pointerLocked) {
@@ -1505,6 +1513,7 @@ document.addEventListener('click', () => {
 
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = !!document.pointerLockElement;
+  if (isTutorialIntroShowing()) return;
   if (pointerLocked && !playerDead) _startGame();
 });
 

@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Bat</title>
+<title>BatSense</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <div id="overlay" onclick="
+  if(event.stopPropagation)event.stopPropagation();
   this.style.display='none';
   document.getElementById('tutorial').classList.add('visible');
   setTimeout(function(){
@@ -25,7 +26,7 @@
     },1200);
   },3800);
 ">
-  <h1>Bat</h1>
+  <h1>BatSense</h1>
   <p class="go">[ CLICK ANYWHERE TO BEGIN ]</p>
 </div>
 
