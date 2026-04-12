@@ -1227,7 +1227,7 @@ document.addEventListener('mousemove', e => {
   if (!gameStarted) return;
   yaw   -= e.movementX * 0.0022;
   pitch -= e.movementY * 0.0022;
-  pitch  = Math.max(-Math.PI*0.47, Math.min(Math.PI*0.47, pitch));
+  pitch  = Math.max(-Math.PI*0.18, Math.min(Math.PI*0.42, pitch));
 });
 
 // ═══════════════════════════════════════════════════════════════════════

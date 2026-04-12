@@ -9,20 +9,85 @@
 
 <div id="overlay" onclick="
   this.style.display='none';
-  document.getElementById('ui').style.display='';
-  document.getElementById('crosshair').style.display='';
-  document.getElementById('sonar-bar-wrap').style.display='';
-  if(typeof gameStarted!=='undefined'){gameStarted=true;}
-  var req=document.body.requestPointerLock&&document.body.requestPointerLock();
-  if(req&&req.catch)req.catch(function(){});
+  document.getElementById('tutorial').classList.add('visible');
+  setTimeout(function(){
+    var tut=document.getElementById('tutorial');
+    tut.classList.add('fade-out');
+    setTimeout(function(){
+      tut.style.display='none';
+      document.getElementById('ui').style.display='';
+      document.getElementById('crosshair').style.display='';
+      document.getElementById('sonar-bar-wrap').style.display='';
+      if(typeof gameStarted!=='undefined'){gameStarted=true;}
+      var req=document.body.requestPointerLock&&document.body.requestPointerLock();
+      if(req&&req.catch)req.catch(function(){});
+    },1200);
+  },3800);
 ">
   <h1>Bat</h1>
-  <p>WASD — Fly</p>
-  <p>MOUSE — Look</p>
-  <p>Q / SPACE — Up &nbsp;&nbsp; E / CTRL — Down</p>
-  <p>CLICK — Emit Sonar Pulse</p>
-  <p class="hazard">Red props — lethal &nbsp;·&nbsp; Blue props — safe bumpers</p>
   <p class="go">[ CLICK ANYWHERE TO BEGIN ]</p>
+</div>
+
+<div id="tutorial">
+
+  <!-- sonar callout -->
+  <div class="tut-sonar-block">
+    <div class="sonar-rings">
+      <div class="ring r1"></div>
+      <div class="ring r2"></div>
+      <div class="ring r3"></div>
+      <div class="sonar-dot"></div>
+    </div>
+    <div class="tut-sonar-text">
+      <span class="tut-label">POINT + CLICK</span>
+      <span class="tut-desc">you are blind. use echolocation.</span>
+    </div>
+  </div>
+
+  <div class="tut-divider"></div>
+
+  <!-- controls row -->
+  <div class="tut-controls">
+
+    <!-- WASD -->
+    <div class="tut-group">
+      <div class="key-row"><div class="key">W</div></div>
+      <div class="key-row"><div class="key">A</div><div class="key">S</div><div class="key">D</div></div>
+      <div class="tut-label">FLY</div>
+    </div>
+
+    <!-- mouse look -->
+    <div class="tut-group">
+      <div class="mouse-icon">
+        <div class="mouse-body">
+          <div class="mouse-btn left-btn"></div>
+          <div class="mouse-btn right-btn"></div>
+          <div class="mouse-scroll"></div>
+        </div>
+        <div class="mouse-arrows">
+          <span>&#8593;</span><span>&#8595;</span><span>&#8592;</span><span>&#8594;</span>
+        </div>
+      </div>
+      <div class="tut-label">LOOK</div>
+    </div>
+
+    <!-- up / down -->
+    <div class="tut-group">
+      <div class="key-row"><div class="key sm">Q</div><span class="key-sep">/</span><div class="key wide">SPC</div></div>
+      <div class="key-row"><div class="key sm">E</div><span class="key-sep">/</span><div class="key wide">CTRL</div></div>
+      <div class="tut-label">UP &nbsp;/&nbsp; DOWN</div>
+    </div>
+
+  </div>
+
+  <!-- hazard legend -->
+  <div class="tut-legend">
+    <span class="dot blue"></span><span>safe</span>
+    <span class="dot red"></span>
+<span style="color: red; font-weight: bold;">lethal</span>
+    
+  </div>
+
 </div>
 
 <div id="gameover" style="display:none" aria-live="polite">

@@ -58,14 +58,126 @@ canvas { display: block; }
 }
 
 #overlay {
-  position: fixed; inset: 0; background: #000; cursor: pointer;
+  position: fixed; inset: 0; background: #000; cursor: pointer; z-index: 20;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   color: #3af; font-family: monospace; text-shadow: 0 0 12px #0af;
 }
-#overlay h1  { font-size: 2.4rem; letter-spacing: 6px; margin-bottom: 16px; }
-#overlay p   { font-size: 0.82rem; opacity: 0.75; margin: 4px 0; letter-spacing: 1px; }
-#overlay .hazard { font-size: 0.72rem; opacity: 0.55; margin-top: 12px; max-width: 22rem; text-align: center; line-height: 1.35; }
-#overlay .go { margin-top: 28px; font-size: 0.95rem; animation: blink 1.4s ease-in-out infinite; }
+#overlay h1  { font-size: 2.4rem; letter-spacing: 6px; margin-bottom: 32px; }
+#overlay .go { font-size: 0.95rem; animation: blink 1.4s ease-in-out infinite; opacity: 0.7; letter-spacing: 2px; }
+
+/* ── Tutorial screen ───────────────────────────────────────── */
+#tutorial {
+  position: fixed; inset: 0; z-index: 19;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 28px;
+  background: #000;
+  color: #3af; font-family: monospace;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+#tutorial.visible  { opacity: 1; }
+#tutorial.fade-out { opacity: 0; transition: opacity 1.2s ease; }
+
+/* sonar callout */
+.tut-sonar-block {
+  display: flex; align-items: center; gap: 22px;
+}
+.sonar-rings {
+  position: relative; width: 64px; height: 64px;
+  display: flex; align-items: center; justify-content: center;
+}
+.ring {
+  position: absolute; border-radius: 50%;
+  border: 1px solid #0af;
+  animation: sonar-expand 2s ease-out infinite;
+  opacity: 0;
+}
+.r1 { width: 20px; height: 20px; animation-delay: 0s; }
+.r2 { width: 38px; height: 38px; animation-delay: 0.5s; }
+.r3 { width: 58px; height: 58px; animation-delay: 1s; }
+.sonar-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #0ff; box-shadow: 0 0 8px #0ff;
+  position: relative; z-index: 1;
+}
+@keyframes sonar-expand {
+  0%   { opacity: 0.9; transform: scale(0.3); }
+  100% { opacity: 0;   transform: scale(1); }
+}
+.tut-sonar-text { text-align: left; }
+.tut-sonar-text .tut-label {
+  display: block; font-size: 1rem; color: #0ff;
+  text-shadow: 0 0 10px #0ff; letter-spacing: 3px; margin-bottom: 4px;
+}
+.tut-sonar-text .tut-desc {
+  font-size: 0.72rem; opacity: 0.6; letter-spacing: 0.5px;
+}
+
+.tut-divider { width: 260px; height: 1px; background: #0af2; }
+
+/* controls row */
+.tut-controls {
+  display: flex; gap: 40px; align-items: flex-start;
+}
+.tut-group {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.tut-label {
+  font-size: 0.65rem; letter-spacing: 2px; opacity: 0.55; margin-top: 4px;
+  text-shadow: 0 0 6px #0af;
+}
+
+/* keys */
+.key-row { display: flex; gap: 4px; justify-content: center; }
+.key {
+  min-width: 28px; height: 28px; padding: 0 5px;
+  border: 1px solid #0af5; background: #001a2a;
+  border-radius: 4px; display: flex; align-items: center; justify-content: center;
+  font-size: 0.72rem; color: #0cf; letter-spacing: 1px;
+  box-shadow: 0 0 6px #0af3, inset 0 -2px 0 #0af2;
+  text-shadow: 0 0 6px #0af;
+}
+.key.sm   { min-width: 24px; font-size: 0.65rem; }
+.key.wide { min-width: 46px; font-size: 0.6rem; letter-spacing: 0; }
+.key-sep  { font-size: 0.65rem; opacity: 0.4; align-self: center; margin: 0 1px; }
+
+/* mouse icon */
+.mouse-icon { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.mouse-body {
+  width: 24px; height: 36px;
+  border: 1px solid #0af5; border-radius: 12px;
+  background: #001a2a; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center;
+  position: relative;
+  box-shadow: 0 0 6px #0af3;
+}
+.mouse-btn {
+  width: 50%; height: 12px;
+  border-bottom: 1px solid #0af4;
+  float: left;
+}
+.left-btn  { border-right: 1px solid #0af4; background: #002a3a; }
+.right-btn { background: #001a2a; }
+.mouse-scroll {
+  clear: both; width: 3px; height: 7px;
+  background: #0af; border-radius: 2px;
+  margin: 2px auto 0; box-shadow: 0 0 4px #0af;
+  position: absolute; top: 14px;
+}
+.mouse-arrows {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 1px; font-size: 0.6rem; opacity: 0.5;
+  color: #0cf; line-height: 1;
+}
+
+/* hazard legend */
+.tut-legend {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 0.65rem; opacity: 0.45; letter-spacing: 1px;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.red  { background: #f44; box-shadow: 0 0 6px #f44; }
+.dot.blue { background: #4af; box-shadow: 0 0 6px #4af; }
 
 #gameover {
   position: fixed; inset: 0; z-index: 30;
