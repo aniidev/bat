@@ -436,9 +436,10 @@ function galleryEdge01(x, z) {
 // ── Shared helper: classic drip cylinder ───────────────────────────
 function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
   const tipR = lethal ? 0.015 + rng()*0.03 : 0.03 + rng()*0.09;
+  // Cylinder: radiusTop at +Y, radiusBottom at −Y. Ceiling: wide at top, tip down; floor: wide at bottom.
   const geo  = new THREE.CylinderGeometry(
-    fromCeil ? tipR : baseR,
     fromCeil ? baseR : tipR,
+    fromCeil ? tipR : baseR,
     h, 6
   );
   const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
@@ -459,11 +460,15 @@ function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
 function _spawnCeilingCone(x, z, h, baseR, lethal) {
   const seg = 5 + (rng() * 4) | 0;
   const geo = new THREE.ConeGeometry(baseR, h, seg);
+  // Default cone: tip at +Y, base at −Y — rotate so base meets ceiling and tip points down.
+  geo.rotateX(Math.PI);
   const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
-  m.rotation.x = Math.PI;
   const topY = getCeilY(x, z);
+
   m.position.set(x, topY - h * 0.5, z);
+
   scene.add(m);
+
   const rad = Math.max(0.04, baseR * 0.55);
   obstacleColliders.push({
     type: 'capsule',
@@ -511,7 +516,7 @@ function _spawnCeilingVariety(x, z, lethal) {
   } else if (roll < 0.58) {
     _spawnCeilingCone(x, z, h, base * (1.1 + rng() * 1.4), lethal);
   } else if (roll < 0.78) {
-    const geo = new THREE.CylinderGeometry(base * 0.22, base * 1.05, h, 6);
+    const geo = new THREE.CylinderGeometry(base * 1.05, base * 0.22, h, 6);
     const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
     const surfY = getCeilY(x, z) - h * 0.5;
     m.position.set(x, surfY, z);
@@ -763,11 +768,13 @@ for (let i = 0; i < 5; i++) {
 // Thin rippled rock sheets that hang from ceiling overhangs.  In real
 // limestone caves these form where water seeps along a sloped surface.
 // DoubleSide so they're visible when flying through or around them.
+
 const curtainMat = new THREE.ShaderMaterial({
   vertexShader: vertShader, fragmentShader: fragShader,
   uniforms: { uPulses: { value: uPulseVec4 }, uCamPos: { value: camera.position } },
   side: THREE.DoubleSide
 });
+
 for (let i = 0; i < 4; i++) {
   const bias = (rng() - 0.5) * 1.65;
   const cx    = Math.max(-CAVE_HALF + 8, Math.min(CAVE_HALF - 8, (rng() - 0.5) * (CAVE_HALF * 2 - 14) + bias * CAVE_HALF * 0.35));
@@ -784,7 +791,7 @@ for (let i = 0; i < 4; i++) {
   const ceilY = getCeilY(cx, cz);
   cm.position.set(cx, ceilY - ch * 0.5, cz);
   cm.rotation.y = cAng;
-  scene.add(cm);
+  // scene.add(cm);
   // Curtains are passable — no collider
 }
 
