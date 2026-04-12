@@ -44,11 +44,40 @@ canvas { display: block; }
 }
 #sonar-bar-wrap {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  width: 180px; text-align: center; pointer-events: none;
+  text-align: center; pointer-events: none;
 }
-#sonar-label { color: #3af; font-family: monospace; font-size: 11px; margin-bottom: 4px; letter-spacing: 2px; text-shadow: 0 0 6px #0af; }
-#sonar-bar   { width: 180px; height: 8px; background: #001a2a; border: 1px solid #0af3; }
-#sonar-fill  { height: 100%; background: linear-gradient(90deg, #005, #0af); width: 100%; box-shadow: 0 0 6px #0af; }
+#sonar-label {
+  color: #3af; font-family: monospace; font-size: 11px;
+  margin-bottom: 6px; letter-spacing: 2px; text-shadow: 0 0 6px #0af;
+}
+#sonar-pips {
+  display: flex; gap: 8px; justify-content: center;
+}
+.sonar-pip {
+  width: 36px; height: 10px;
+  background: #001a2a; border: 1px solid #0af4;
+  border-radius: 3px; overflow: hidden;
+  position: relative;
+}
+.pip-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #005080, #0af);
+  box-shadow: 0 0 6px #0af;
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(1);
+  transition: none;
+}
+.sonar-pip.empty .pip-fill   { transform: scaleX(0); box-shadow: none; }
+.sonar-pip.reloading .pip-fill { transition: transform 0.05s linear; }
+.sonar-pip.ready .pip-fill   {
+  transform: scaleX(1);
+  animation: pip-ready-flash 0.25s ease-out;
+}
+@keyframes pip-ready-flash {
+  0%   { box-shadow: 0 0 14px #0ff; background: #0ff; }
+  100% { box-shadow: 0 0 6px #0af;  background: linear-gradient(90deg,#005080,#0af); }
+}
 
 
 #flash {

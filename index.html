@@ -13,14 +13,15 @@
   setTimeout(function(){
     var tut=document.getElementById('tutorial');
     tut.classList.add('fade-out');
+    // Start the game now so the world is live as the tutorial fades out
+    document.getElementById('ui').style.display='';
+    document.getElementById('crosshair').style.display='';
+    document.getElementById('sonar-bar-wrap').style.display='';
+    if(typeof gameStarted!=='undefined'){gameStarted=true;}
+    var req=document.body.requestPointerLock&&document.body.requestPointerLock();
+    if(req&&req.catch)req.catch(function(){});
     setTimeout(function(){
       tut.style.display='none';
-      document.getElementById('ui').style.display='';
-      document.getElementById('crosshair').style.display='';
-      document.getElementById('sonar-bar-wrap').style.display='';
-      if(typeof gameStarted!=='undefined'){gameStarted=true;}
-      var req=document.body.requestPointerLock&&document.body.requestPointerLock();
-      if(req&&req.catch)req.catch(function(){});
     },1200);
   },3800);
 ">
@@ -103,7 +104,11 @@
 
 <div id="sonar-bar-wrap" style="display:none">
   <div id="sonar-label">SONAR</div>
-  <div id="sonar-bar"><div id="sonar-fill"></div></div>
+  <div id="sonar-pips">
+    <div class="sonar-pip" id="sonar-pip-0"><div class="pip-fill"></div></div>
+    <div class="sonar-pip" id="sonar-pip-1"><div class="pip-fill"></div></div>
+    <div class="sonar-pip" id="sonar-pip-2"><div class="pip-fill"></div></div>
+  </div>
 </div>
 
 <div id="wing-left"></div>

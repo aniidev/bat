@@ -904,9 +904,10 @@ const ringGeoV  = makeCircleLine(72);  // vertical ring
 // ═══════════════════════════════════════════════════════════════════════
 const PULSE_SPEED    = 13;    // world units / second
 const PULSE_MAXR     = 120;   // keep data alive until everything has faded
-const SONAR_COOLDOWN = 1.4;   // seconds between shots
-let   lastSonarTime  = -999;
-let   sonarCharge    = 1.0;
+const SONAR_MAX_AMMO    = 3;
+const SONAR_RELOAD_TIME = 2.2;  // seconds to reload one pip
+let   sonarAmmo         = SONAR_MAX_AMMO;
+let   sonarReloadTimer  = 0;    // counts up toward SONAR_RELOAD_TIME for the next pip
 
 const PROJ_SPEED     = 62;
 const PROJ_MAX_DIST  = 200;
@@ -974,8 +975,30 @@ function alignRingGroupToNormal(ringParent, n) {
   ringParent.quaternion.setFromUnitVectors(_yAxis, _n);
 }
 
-const sonarFill = document.getElementById('sonar-fill');
-const flashEl   = document.getElementById('flash');
+const sonarPipEls = [0, 1, 2].map(i => document.getElementById('sonar-pip-' + i));
+const flashEl     = document.getElementById('flash');
+
+function updateSonarPips() {
+  for (let i = 0; i < SONAR_MAX_AMMO; i++) {
+    const el   = sonarPipEls[i];
+    const fill = el.querySelector('.pip-fill');
+    if (i < sonarAmmo) {
+      // fully charged
+      if (!el.classList.contains('ready')) {
+        el.className = 'sonar-pip ready';
+        fill.style.transform = 'scaleX(1)';
+      }
+    } else if (i === sonarAmmo && sonarAmmo < SONAR_MAX_AMMO) {
+      // currently reloading
+      el.className = 'sonar-pip reloading';
+      fill.style.transform = 'scaleX(' + (sonarReloadTimer / SONAR_RELOAD_TIME).toFixed(3) + ')';
+    } else {
+      // empty, not yet reloading
+      el.className = 'sonar-pip empty';
+      fill.style.transform = 'scaleX(0)';
+    }
+  }
+}
 
 function playLaunchChirp() {
   try {
@@ -1068,10 +1091,11 @@ function beginSonarPulse(origin, outwardNormal) {
 
 function fireSonarBolt() {
   if (playerDead) return;
-  const now = performance.now() / 1000;
-  if (now - lastSonarTime < SONAR_COOLDOWN) return;
-  lastSonarTime = now;
-  sonarCharge   = 0;
+  if (sonarAmmo <= 0) return;
+  sonarAmmo--;
+  sonarPipEls[sonarAmmo].className = 'sonar-pip empty';
+  sonarPipEls[sonarAmmo].querySelector('.pip-fill').style.transform = 'scaleX(0)';
+  if (sonarAmmo === SONAR_MAX_AMMO - 1) sonarReloadTimer = 0; // start reload clock
 
   raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
   const dir = raycaster.ray.direction.clone().normalize();
@@ -1269,9 +1293,9 @@ function resetRun() {
   yaw = 0;
   pitch = 0;
   flapPhase = 0;
-  lastSonarTime = -999;
-  sonarCharge = 1;
-  sonarFill.style.width = '100%';
+  sonarAmmo        = SONAR_MAX_AMMO;
+  sonarReloadTimer = 0;
+  updateSonarPips();
   Object.keys(keys).forEach((k) => { keys[k] = false; });
   resetHawks();
   
@@ -1601,10 +1625,21 @@ function animate() {
     if (h.mixer) h.mixer.update(dt);
   }
 
-  // Sonar charge bar
-  if (!playerDead) {
-    sonarCharge = Math.min(1, sonarCharge + dt / SONAR_COOLDOWN);
-    sonarFill.style.width = (sonarCharge * 100).toFixed(1) + '%';
+  // Sonar ammo reload — only triggers when fully empty, then refills all at once
+  if (!playerDead && sonarAmmo === 0) {
+    sonarReloadTimer += dt;
+    const progress = Math.min(sonarReloadTimer / SONAR_RELOAD_TIME, 1);
+    for (let i = 0; i < SONAR_MAX_AMMO; i++) {
+      const el   = sonarPipEls[i];
+      const fill = el.querySelector('.pip-fill');
+      el.className = 'sonar-pip reloading';
+      fill.style.transform = 'scaleX(' + progress.toFixed(3) + ')';
+    }
+    if (sonarReloadTimer >= SONAR_RELOAD_TIME) {
+      sonarAmmo = SONAR_MAX_AMMO;
+      sonarReloadTimer = 0;
+      updateSonarPips();
+    }
   }
 
   if (!playerDead) {
@@ -1666,7 +1701,7 @@ function animate() {
   }
   // uCamPos is a reference to camera.position — no manual update needed
 
-  renderer.render(scene, camera);
+  if (gameStarted) renderer.render(scene, camera);
 }
 
 window.addEventListener('resize', () => {
