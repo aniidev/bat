@@ -41,7 +41,22 @@
     </div>
     <div class="tut-sonar-text">
       <span class="tut-label">POINT + CLICK</span>
-      <span class="tut-desc">you are blind. use echolocation.</span>
+      <span class="tut-desc"><span class="tut-blind-emph">You are blind. Use echolocation.</span> </span>
+    </div>
+  </div>
+
+  <div class="tut-divider"></div>
+
+  <!-- goal + preview of exit (before controls) -->
+  <div class="tut-goal-block">
+    <div class="tut-exit-preview" title="What the exit looks like when sonar hits it" aria-hidden="true">
+      <div class="tut-exit-hole"></div>
+    </div>
+    <div class="tut-goal-text">
+      <span class="tut-label tut-goal-label">GOAL</span>
+      <p class="tut-goal-desc">
+        The <span class="tut-gold-word">gold ring</span> is your exit.
+      </p>
     </div>
   </div>
 
@@ -94,7 +109,22 @@
 <div id="gameover" style="display:none" aria-live="polite">
   <h2>GAME OVER</h2>
   <p class="reason">You struck a lethal obstacle.</p>
-  <button type="button" id="restart-btn">Play again</button>
+  <button type="button" id="restart-btn">Try again</button>
+</div>
+
+<div id="winscreen" style="display:none" aria-live="polite">
+  <div class="win-screen-main">
+    <div id="win-rings">
+      <div class="win-ring wr1"></div>
+      <div class="win-ring wr2"></div>
+      <div class="win-ring wr3"></div>
+      <div class="win-core"></div>
+    </div>
+    <h2 id="win-title">ESCAPED</h2>
+    <p class="win-sub">You found the way out of the dark.</p>
+    <button type="button" id="play-again-btn">Play again</button>
+  </div>
+  <button type="button" id="win-exit-btn" class="win-exit-btn">Home</button>
 </div>
 
 <p id="model-credit">Bat 3D: Dzimge (CC-BY-4.0) · Sketchfab · Hawks: 3D eagle GLTF (same setup as bat)</p>
@@ -102,13 +132,10 @@
 <div id="ui" style="display:none"></div>
 <div id="crosshair" style="display:none"></div>
 
+
 <div id="sonar-bar-wrap" style="display:none">
   <div id="sonar-label">SONAR</div>
-  <div id="sonar-pips">
-    <div class="sonar-pip" id="sonar-pip-0"><div class="pip-fill"></div></div>
-    <div class="sonar-pip" id="sonar-pip-1"><div class="pip-fill"></div></div>
-    <div class="sonar-pip" id="sonar-pip-2"><div class="pip-fill"></div></div>
-  </div>
+  <div id="sonar-bar"><div id="sonar-bar-fill"></div></div>
 </div>
 
 <div id="wing-left"></div>

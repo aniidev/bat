@@ -42,24 +42,22 @@ canvas { display: block; }
   left: 2px;
   top: 4.5px;
 }
+
+
 #sonar-bar-wrap {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  text-align: center; pointer-events: none;
+  text-align: center; pointer-events: none; z-index: 10;
 }
 #sonar-label {
   color: #3af; font-family: monospace; font-size: 11px;
   margin-bottom: 6px; letter-spacing: 2px; text-shadow: 0 0 6px #0af;
 }
-#sonar-pips {
-  display: flex; gap: 8px; justify-content: center;
-}
-.sonar-pip {
-  width: 36px; height: 10px;
+#sonar-bar {
+  width: 150px; height: 8px;
   background: #001a2a; border: 1px solid #0af4;
   border-radius: 3px; overflow: hidden;
-  position: relative;
 }
-.pip-fill {
+#sonar-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #005080, #0af);
   box-shadow: 0 0 6px #0af;
@@ -68,17 +66,96 @@ canvas { display: block; }
   transform: scaleX(1);
   transition: none;
 }
-.sonar-pip.empty .pip-fill   { transform: scaleX(0); box-shadow: none; }
-.sonar-pip.reloading .pip-fill { transition: transform 0.05s linear; }
-.sonar-pip.ready .pip-fill   {
-  transform: scaleX(1);
-  animation: pip-ready-flash 0.25s ease-out;
-}
-@keyframes pip-ready-flash {
+#sonar-bar-fill.charging { transition: transform 0.05s linear; }
+@keyframes sonar-ready-flash {
   0%   { box-shadow: 0 0 14px #0ff; background: #0ff; }
   100% { box-shadow: 0 0 6px #0af;  background: linear-gradient(90deg,#005080,#0af); }
 }
+#sonar-bar-fill.ready { animation: sonar-ready-flash 0.3s ease-out; }
 
+/* ── Win screen ──────────────────────────────────────────────────────── */
+#winscreen {
+  position: fixed; inset: 0; z-index: 30;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  padding: 12vh 24px 28px;
+  min-height: 100vh;
+  background: rgba(0,0,0,0.93);
+  color: #ffd84a; font-family: monospace;
+  text-shadow: 0 0 18px #ffa020;
+  pointer-events: auto;
+}
+.win-screen-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  width: 100%;
+}
+#win-title {
+  font-size: 2.4rem; letter-spacing: 10px; margin: 0;
+  animation: win-pulse 2s ease-in-out infinite;
+}
+@keyframes win-pulse {
+  0%,100% { text-shadow: 0 0 18px #ffa020; }
+  50%      { text-shadow: 0 0 40px #ffe060, 0 0 80px #ff8800; }
+}
+.win-sub {
+  font-size: 0.82rem; opacity: 0.7; letter-spacing: 1px; margin: 0;
+  color: #ffcf70;
+}
+#play-again-btn {
+  font-family: monospace; font-size: 1rem; letter-spacing: 2px;
+  padding: 12px 28px; cursor: pointer;
+  color: #ffd84a; background: #1a0e00; border: 1px solid #ffa0206e;
+  text-shadow: 0 0 8px #ffa020;
+}
+#play-again-btn:hover { background: #2a1800; border-color: #ffd84a; }
+
+.win-exit-btn {
+  font-family: monospace;
+  font-size: 0.82rem;
+  letter-spacing: 3px;
+  padding: 10px 24px;
+  cursor: pointer;
+  color: #9a8a6a;
+  background: rgba(20, 16, 10, 0.6);
+  border: 1px solid rgba(120, 100, 70, 0.45);
+  text-shadow: none;
+}
+.win-exit-btn:hover {
+  color: #c4b090;
+  border-color: rgba(180, 150, 100, 0.55);
+  background: rgba(30, 24, 16, 0.85);
+}
+
+/* Gold expanding rings on win screen */
+#win-rings {
+  position: relative; width: 80px; height: 80px;
+  display: flex; align-items: center; justify-content: center;
+}
+.win-ring {
+  position: absolute; border-radius: 50%;
+  border: 1.5px solid #ffd84a;
+  animation: win-ring-expand 2s ease-out infinite;
+}
+.wr1 { width: 24px;  height: 24px;  animation-delay: 0s; }
+.wr2 { width: 50px;  height: 50px;  animation-delay: 0.55s; }
+.wr3 { width: 76px;  height: 76px;  animation-delay: 1.1s; }
+@keyframes win-ring-expand {
+  0%   { opacity: 0.9; transform: scale(0.3); box-shadow: 0 0 8px #ffa020; }
+  100% { opacity: 0;   transform: scale(1);   box-shadow: none; }
+}
+.win-core {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #ffd84a; box-shadow: 0 0 14px #ffa020, 0 0 30px #ff8800;
+  position: relative; z-index: 1;
+}
 
 #flash {
   position: fixed; inset: 0; pointer-events: none; opacity: 0;
@@ -98,7 +175,7 @@ canvas { display: block; }
 #tutorial {
   position: fixed; inset: 0; z-index: 19;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 28px;
+  gap: 14px;
   background: #000;
   color: #3af; font-family: monospace;
   opacity: 0; pointer-events: none;
@@ -107,13 +184,71 @@ canvas { display: block; }
 #tutorial.visible  { opacity: 1; }
 #tutorial.fade-out { opacity: 0; transition: opacity 1.2s ease; }
 
+/* goal + exit preview (matches in-game gold rim / black void) */
+.tut-goal-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 360px;
+  padding: 0 8px;
+}
+.tut-exit-preview {
+  flex-shrink: 0;
+  width: 58px;
+  height: 58px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 4px solid #e9a82e;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* Solid black pit — only the outer border reads as the gold ring */
+.tut-exit-hole {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: #000000;
+}
+.tut-goal-text { text-align: left; }
+.tut-goal-label {
+  display: block;
+  font-size: 0.78rem;
+  color: #ffc84a;
+  text-shadow: 0 0 10px #fa0a, 0 0 18px #f808;
+  letter-spacing: 3px;
+  margin-bottom: 2px;
+  opacity: 1;
+}
+.tut-goal-desc {
+  font-size: 0.65rem;
+  line-height: 1.32;
+  opacity: 0.78;
+  letter-spacing: 0.35px;
+  color: #9dd4ff;
+  margin: 0;
+}
+.tut-gold-word {
+  color: #ffc84a;
+  text-shadow: 0 0 8px rgba(255, 180, 60, 0.5);
+  font-weight: bold;
+}
+
 /* sonar callout */
 .tut-sonar-block {
-  display: flex; align-items: center; gap: 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .sonar-rings {
-  position: relative; width: 64px; height: 64px;
-  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .ring {
   position: absolute; border-radius: 50%;
@@ -121,12 +256,12 @@ canvas { display: block; }
   animation: sonar-expand 2s ease-out infinite;
   opacity: 0;
 }
-.r1 { width: 20px; height: 20px; animation-delay: 0s; }
-.r2 { width: 38px; height: 38px; animation-delay: 0.5s; }
-.r3 { width: 58px; height: 58px; animation-delay: 1s; }
+.r1 { width: 16px; height: 16px; animation-delay: 0s; }
+.r2 { width: 30px; height: 30px; animation-delay: 0.5s; }
+.r3 { width: 46px; height: 46px; animation-delay: 1s; }
 .sonar-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: #0ff; box-shadow: 0 0 8px #0ff;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #0ff; box-shadow: 0 0 6px #0ff;
   position: relative; z-index: 1;
 }
 @keyframes sonar-expand {
@@ -135,14 +270,29 @@ canvas { display: block; }
 }
 .tut-sonar-text { text-align: left; }
 .tut-sonar-text .tut-label {
-  display: block; font-size: 1rem; color: #0ff;
-  text-shadow: 0 0 10px #0ff; letter-spacing: 3px; margin-bottom: 4px;
+  display: block;
+  font-size: 0.82rem;
+  color: #0ff;
+  text-shadow: 0 0 8px #0ff;
+  letter-spacing: 2px;
+  margin-bottom: 2px;
 }
 .tut-sonar-text .tut-desc {
-  font-size: 0.72rem; opacity: 0.6; letter-spacing: 0.5px;
+  font-size: 0.58rem;
+  opacity: 0.52;
+  letter-spacing: 0.3px;
+  line-height: 1.35;
+}
+.tut-blind-emph {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #cfffff;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 12px #0ff, 0 0 22px #08c;
+  margin-right: 0.25em;
 }
 
-.tut-divider { width: 260px; height: 1px; background: #0af2; }
+.tut-divider { width: 200px; height: 1px; background: #0af2; }
 
 /* controls row */
 .tut-controls {

@@ -258,6 +258,66 @@ const fragShaderObstacle = /* glsl */`
   }
 `;
 
+// Gold exit shader — same grid/pulse logic, warm amber/gold palette
+const fragShaderExit = /* glsl */`
+  #define MAX_P ${MAX_PULSES}
+
+  uniform vec4 uPulses[MAX_P];
+  uniform vec3 uCamPos;
+
+  varying vec3 vWorldPos;
+
+  float gridLine(float v, float scale, float lw) {
+    float f = fract(v * scale);
+    float d = min(f, 1.0 - f);
+    return 1.0 - smoothstep(0.0, lw, d);
+  }
+
+  void main() {
+    const float TRAIL  = 80.0;
+    const float GSCALE = 0.65;
+    const float LW     = 0.07;
+
+    float lx   = gridLine(vWorldPos.x, GSCALE, LW);
+    float ly   = gridLine(vWorldPos.y, GSCALE, LW);
+    float lz   = gridLine(vWorldPos.z, GSCALE, LW);
+    float grid = max(lx, max(ly, lz));
+
+    float totalGrid  = 0.0;
+    float totalFill  = 0.0;
+    float totalFront = 0.0;
+
+    for (int i = 0; i < MAX_P; i++) {
+      float radius = uPulses[i].w;
+      if (radius < 0.0) continue;
+      float dist   = distance(vWorldPos, uPulses[i].xyz);
+      float behind = radius - dist;
+      if (behind > 0.0 && behind < TRAIL) {
+        float t     = behind / TRAIL;
+        float fade  = pow(1.0 - t, 3.5);
+        float front = exp(-behind * 0.9);
+        totalGrid  = max(totalGrid,  grid * fade);
+        totalFill  = max(totalFill,  fade * 0.22);
+        totalFront = max(totalFront, front);
+      }
+    }
+
+    // Gold/amber palette — hidden until sonar, same as all cave geometry
+    vec3 baseCol  = vec3(0.007, 0.005, 0.0);
+    vec3 gridCol  = vec3(1.0,  0.72, 0.08);
+    vec3 frontCol = vec3(1.0,  0.96, 0.55);
+
+    vec3 col = baseCol + gridCol * (totalGrid * 1.8 + totalFill);
+    col += frontCol * (totalFront * totalFront * 3.5);
+
+    float fogD = distance(vWorldPos, uCamPos);
+    float fog  = 1.0 - exp(-fogD * 0.033);
+    col = mix(col, vec3(0.0), clamp(fog, 0.0, 1.0));
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
 // Uniform arrays — updated every frame from the JS pulse list
 const uPulseVec4 = [];
 for (let i = 0; i < MAX_PULSES; i++) uPulseVec4.push(new THREE.Vector4(0, 0, 0, -1));
@@ -280,11 +340,48 @@ const obstacleCaveMat = new THREE.ShaderMaterial({
   }
 });
 
+const exitMat = new THREE.ShaderMaterial({
+  vertexShader:   vertShader,
+  fragmentShader: fragShaderExit,
+  side: THREE.BackSide,
+  uniforms: {
+    uPulses: { value: uPulseVec4 },
+    uCamPos: { value: camera.position }
+  }
+});
+const exitRingMat = new THREE.ShaderMaterial({
+  vertexShader:   vertShader,
+  fragmentShader: fragShaderExit,
+  side: THREE.DoubleSide,
+  depthWrite: true,
+  polygonOffset: true,
+  polygonOffsetFactor: -2.5,
+  polygonOffsetUnits: -2.5,
+  uniforms: {
+    uPulses: { value: uPulseVec4 },
+    uCamPos: { value: camera.position }
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 //  CAVE GEOMETRY  (shell: caveMat; props: red lethal OR blue safe, same grid)
 // ═══════════════════════════════════════════════════════════════════════
 const CAVE_HALF = 56;
 const CAVE_H    = 14;
+
+// Exit hole — radius/depth are fixed; center + orientation are chosen at runtime
+const EXIT_RADIUS =   4.0;
+const EXIT_DEPTH  =  12;
+let exitCenter    = new THREE.Vector3(9999, 9999, 9999);  // set when geometry is built
+let exitIsFloor   = false;   // true → floor hole, false → wall / ceiling hole
+const exitAnchor  = new THREE.Vector3(9999, 9999, 9999);  // surface point at hole center
+const exitNormal  = new THREE.Vector3(0, 1, 0);           // tunnel extends from anchor along +exitNormal
+/** @type {'floor' | 'ceiling' | 'wall'} */
+let exitKind = 'wall';
+// Win volume: in-plane hole + depth along tunnel (matches gold rim / black fill, not a 3D ball at exitCenter)
+const EXIT_WIN_HOLE_R    = EXIT_RADIUS * 1.34;
+const EXIT_WIN_ALONG_MIN = 0.26;
+const EXIT_WIN_ALONG_MAX = EXIT_DEPTH * 0.62;
 
 // Player hit sphere (bat body) — tight; colliders match mesh geometry, not loose bounds.
 const PLAYER_COLLIDE_R   = 0.44;
@@ -295,6 +392,29 @@ const _capAb = new THREE.Vector3();
 const _capAp = new THREE.Vector3();
 const _capClosest = new THREE.Vector3();
 const _spawnTest = new THREE.Vector3();
+const _exitRel = new THREE.Vector3();
+const _exitWinPos = new THREE.Vector3();
+
+/** Wall exit: relax slab constraint when player is aligned with the hole (same frame as geometry). */
+function exitWallReliefActiveAt(px, py, pz, pr) {
+  if (exitKind !== 'wall') return false;
+  _exitRel.set(px, py, pz).sub(exitAnchor);
+  const along = _exitRel.dot(exitNormal);
+  _exitRel.addScaledVector(exitNormal, -along);
+  if (_exitRel.length() > EXIT_RADIUS * 1.45 + pr) return false;
+  if (along < -0.85 || along > EXIT_DEPTH * 0.82) return false;
+  return true;
+}
+
+/** True when bat body centre is inside the irregular hole disc and far enough along the tunnel axis. */
+function playerInExitWinVolume(px, py, pz) {
+  _exitRel.set(px, py, pz).sub(exitAnchor);
+  const along = _exitRel.dot(exitNormal);
+  _exitRel.addScaledVector(exitNormal, -along);
+  if (_exitRel.length() > EXIT_WIN_HOLE_R) return false;
+  if (along < EXIT_WIN_ALONG_MIN || along > EXIT_WIN_ALONG_MAX) return false;
+  return true;
+}
 
 function closestPointOnSegment(out, p, a, b) {
   _capAb.subVectors(b, a);
@@ -396,16 +516,33 @@ function constrainPlayerToWallShell(pos, r) {
   const zMax = CAVE_HALF - _wallRockDisp(-px, py, 5.3, 2.1) - r;
   const xMin = -CAVE_HALF + _wallRockDisp(-pz, py, 1.7, 7.4) + r;
   const xMax = CAVE_HALF - _wallRockDisp(pz, py, 9.2, 3.8) - r;
-  if (pz < zMin) pos.z = zMin;
-  if (pz > zMax) pos.z = zMax;
-  if (px < xMin) pos.x = xMin;
-  if (px > xMax) pos.x = xMax;
+  const relief = exitWallReliefActiveAt(px, py, pz, r);
+  if (!(relief && exitNormal.z > 0.55) && pz < zMin) pos.z = zMin;
+  if (!(relief && exitNormal.z < -0.55) && pz > zMax) pos.z = zMax;
+  if (!(relief && exitNormal.x > 0.55) && px < xMin) pos.x = xMin;
+  if (!(relief && exitNormal.x < -0.55) && px > xMax) pos.x = xMax;
 }
 
 function clampPointToFloorCeiling(pos, r) {
-  const fY = getFloorY(pos.x, pos.z) + r;
   const cY = getCeilY(pos.x, pos.z) - r;
-  pos.y = Math.max(fY, Math.min(cY, pos.y));
+  let inCeilingExit = false;
+  if (exitKind === 'ceiling') {
+    const exDx = pos.x - exitAnchor.x;
+    const exDz = pos.z - exitAnchor.z;
+    inCeilingExit = (exDx * exDx + exDz * exDz) < EXIT_RADIUS * EXIT_RADIUS;
+  }
+  if (!inCeilingExit && pos.y > cY) { pos.y = cY; return; }
+  // If the exit is a floor hole, punch out the floor so the player can enter it
+  let inExit = false;
+  if (exitIsFloor) {
+    const exDx = pos.x - exitCenter.x;
+    const exDz = pos.z - exitCenter.z;
+    inExit = (exDx * exDx + exDz * exDz) < EXIT_RADIUS * EXIT_RADIUS;
+  }
+  if (!inExit) {
+    const fY = getFloorY(pos.x, pos.z) + r;
+    if (pos.y < fY) pos.y = fY;
+  }
 }
 
 /** Used for camera & spawn checks — same bounds as player shell, smaller clearance. */
@@ -416,14 +553,34 @@ function isPointInsideCaveShell(px, py, pz, r) {
   const xMax = CAVE_HALF - _wallRockDisp(pz, py, 9.2, 3.8) - r;
   const fY = getFloorY(px, pz) + r;
   const cY = getCeilY(px, pz) - r;
-  return (
+  const inWalls =
     px >= xMin - 1e-4 &&
     px <= xMax + 1e-4 &&
     pz >= zMin - 1e-4 &&
-    pz <= zMax + 1e-4 &&
-    py >= fY - 1e-4 &&
-    py <= cY + 1e-4
-  );
+    pz <= zMax + 1e-4;
+  const inY = py >= fY - 1e-4 && py <= cY + 1e-4;
+  if (inWalls && inY) return true;
+  const dxF = px - exitAnchor.x;
+  const dzF = pz - exitAnchor.z;
+  const disc = dxF * dxF + dzF * dzF < EXIT_RADIUS * EXIT_RADIUS;
+  if (exitKind === 'floor' && disc && inWalls) {
+    if (py >= fY - EXIT_DEPTH * 0.72 && py <= cY + 2.0) return true;
+  }
+  if (exitKind === 'ceiling' && disc && inWalls) {
+    if (py <= cY + EXIT_DEPTH * 0.72 && py >= fY - 2.0) return true;
+  }
+  if (exitKind === 'wall' && exitWallReliefActiveAt(px, py, pz, r)) {
+    const pad = 2.5;
+    return (
+      px >= xMin - pad &&
+      px <= xMax + pad &&
+      pz >= zMin - pad &&
+      pz <= zMax + pad &&
+      py >= fY - 3.0 &&
+      py <= cY + 3.0
+    );
+  }
+  return false;
 }
 
 function snapPointIntoCaveShell(pos, r) {
@@ -883,6 +1040,139 @@ scene.traverse((o) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+//  EXIT HOLE  — gold tunnel hidden in dark; random floor or wall placement
+// ═══════════════════════════════════════════════════════════════════════
+{
+  // Pick placement: floor | ceiling | 4 walls — each ~16.7%
+  const exitRoll = rng();
+  if (exitRoll < 0.167) {
+    // ── Floor hole ──────────────────────────────────────────────────────
+    exitKind = 'floor';
+    exitIsFloor = true;
+    const angle = rng() * Math.PI * 2;
+    const dist  = 22 + rng() * 24;
+    const ex    = Math.cos(angle) * dist;
+    const ez    = Math.sin(angle) * dist;
+    const ey    = getFloorY(ex, ez);
+    exitAnchor.set(ex, ey, ez);
+    exitNormal.set(0, -1, 0);   // tunnel goes downward
+    exitCenter.set(ex, ey, ez);
+  } else if (exitRoll < 0.334) {
+    // ── Ceiling hole ─────────────────────────────────────────────────────
+    exitKind = 'ceiling';
+    exitIsFloor = false;
+    const angle = rng() * Math.PI * 2;
+    const dist  = 22 + rng() * 24;
+    const ex    = Math.cos(angle) * dist;
+    const ez    = Math.sin(angle) * dist;
+    const ey    = getCeilY(ex, ez);
+    exitAnchor.set(ex, ey, ez);
+    exitNormal.set(0, 1, 0);    // tunnel goes upward
+    exitCenter.set(ex, ey, ez);
+  } else {
+    // ── Wall hole ────────────────────────────────────────────────────────
+    exitKind = 'wall';
+    exitIsFloor = false;
+    const wallIdx = Math.min(3, Math.floor((exitRoll - 0.334) / 0.1665));  // 0-3
+    const wallDist = CAVE_HALF - 3;
+    const caveMidY = CAVE_H * 0.5;
+    const wallY    = caveMidY * 0.4 + rng() * caveMidY * 0.5;
+    const along    = (rng() - 0.5) * (CAVE_HALF * 1.2);
+    let wx = 0, wz = 0;
+    if      (wallIdx === 0) { wz = -wallDist; wx = along; exitNormal.set(0, 0,  1); }  // north wall
+    else if (wallIdx === 1) { wz =  wallDist; wx = along; exitNormal.set(0, 0, -1); }  // south wall
+    else if (wallIdx === 2) { wx = -wallDist; wz = along; exitNormal.set( 1, 0, 0); }  // west wall
+    else                    { wx =  wallDist; wz = along; exitNormal.set(-1, 0, 0); }  // east wall
+    exitAnchor.set(wx, wallY, wz);
+    exitCenter.set(wx + exitNormal.x * 0.5, wallY, wz + exitNormal.z * 0.5);
+  }
+
+  // Quaternion that rotates geometry's +Z normal → exitNormal
+  // (all flat geometry below is built in the XY plane, normal = +Z)
+  const faceQuat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1), exitNormal
+  );
+
+  // ── Build an irregular (organic) hole shape in the XY plane ──────────
+  // Each sample angle gets a noisy radius so the boundary looks like a
+  // natural crack in the rock rather than a perfect circle.
+  const N = 48;
+  const holeSeed = rng() * 100;
+  const noisyR = [];
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const noise =  0.22 * Math.sin(a * 2.1 + holeSeed)
+                 + 0.15 * Math.sin(a * 3.7 + holeSeed * 1.6)
+                 + 0.09 * Math.sin(a * 5.9 + holeSeed * 2.3)
+                 + (rng() - 0.5) * 0.14;
+    noisyR.push(EXIT_RADIUS + noise);
+  }
+
+  // ── Hole interior + tunnel void — BasicMaterial only (no pulse uniforms) + fog off so it never tints blue
+  const holeVoidMat = new THREE.MeshBasicMaterial({
+    color: 0x000000,
+    side: THREE.DoubleSide,
+    depthWrite: true,
+    depthTest: true,
+    fog: false
+  });
+  // Black hole disc: same plane & orientation as gold rim, slightly toward cave shell, radius inside inner gold edge
+  const holeInnerScale = 0.856; // just inside rim inner (~0.86×R) so gold ring is never covered
+  const fillPositions = [];
+  const fillIndices   = [];
+  fillPositions.push(0, 0, 0);
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const rr = noisyR[i] * holeInnerScale;
+    fillPositions.push(Math.cos(a) * rr, Math.sin(a) * rr, 0);
+  }
+  for (let i = 0; i < N; i++) {
+    fillIndices.push(0, i + 1, (i + 1) % N + 1);
+  }
+  const fillGeo = new THREE.BufferGeometry();
+  fillGeo.setAttribute('position', new THREE.Float32BufferAttribute(fillPositions, 3));
+  fillGeo.setIndex(fillIndices);
+
+  const rimIntoRoom = exitKind === 'wall' ? 4.6 : -2.35;
+  // Same plane as rim: move a few cm toward anchor along exit line (behind gold); rim’s polygonOffset keeps gold on top
+  const holePlaneAlong = rimIntoRoom > 0 ? rimIntoRoom - 0.038 : rimIntoRoom + 0.038;
+  const fillMesh = new THREE.Mesh(fillGeo, holeVoidMat);
+  fillMesh.quaternion.copy(faceQuat);
+  fillMesh.position.copy(exitAnchor).addScaledVector(exitNormal, holePlaneAlong);
+  fillMesh.renderOrder = 6;
+  scene.add(fillMesh);
+
+  // ── Gold outline strip — thin annulus with same irregular boundary ────
+  // Inner edge = 88% of noisyR, outer edge = noisyR + small extra jagged bump
+  const rimPositions = [];
+  const rimIndices   = [];
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const r     = noisyR[i];
+    const inner = r * 0.86;
+    const outer = r + 0.26 + (rng() - 0.5) * 0.12;
+    rimPositions.push(Math.cos(a) * inner, Math.sin(a) * inner, 0);  // even = inner
+    rimPositions.push(Math.cos(a) * outer, Math.sin(a) * outer, 0);  // odd  = outer
+  }
+  for (let i = 0; i < N; i++) {
+    const a  = i * 2;
+    const b  = ((i + 1) % N) * 2;
+    rimIndices.push(a, b,     a + 1);
+    rimIndices.push(b, b + 1, a + 1);
+  }
+  const rimGeo = new THREE.BufferGeometry();
+  rimGeo.setAttribute('position', new THREE.Float32BufferAttribute(rimPositions, 3));
+  rimGeo.setIndex(rimIndices);
+  const rimMesh = new THREE.Mesh(rimGeo, exitRingMat);
+  rimMesh.quaternion.copy(faceQuat);
+  rimMesh.position.copy(exitAnchor).addScaledVector(exitNormal, rimIntoRoom);
+  rimMesh.renderOrder = 10;
+  scene.add(rimMesh);
+  sonarRayTargets.push(rimMesh);
+  sonarRayTargets.push(fillMesh);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  PULSE RING VISUAL
 //  A very thin LineLoop circle that expands quickly to give the player
 //  immediate feedback that the sound went out.  Separate from the
@@ -904,10 +1194,8 @@ const ringGeoV  = makeCircleLine(72);  // vertical ring
 // ═══════════════════════════════════════════════════════════════════════
 const PULSE_SPEED    = 13;    // world units / second
 const PULSE_MAXR     = 120;   // keep data alive until everything has faded
-const SONAR_MAX_AMMO    = 3;
-const SONAR_RELOAD_TIME = 2.2;  // seconds to reload one pip
-let   sonarAmmo         = SONAR_MAX_AMMO;
-let   sonarReloadTimer  = 0;    // counts up toward SONAR_RELOAD_TIME for the next pip
+const SONAR_COOLDOWN = 5.5;   // seconds between shots
+let   sonarCooldown  = 0;     // counts down to 0
 
 const PROJ_SPEED     = 62;
 const PROJ_MAX_DIST  = 200;
@@ -975,28 +1263,20 @@ function alignRingGroupToNormal(ringParent, n) {
   ringParent.quaternion.setFromUnitVectors(_yAxis, _n);
 }
 
-const sonarPipEls = [0, 1, 2].map(i => document.getElementById('sonar-pip-' + i));
-const flashEl     = document.getElementById('flash');
+const flashEl      = document.getElementById('flash');
+const sonarBarWrap = document.getElementById('sonar-bar-wrap');
+const sonarBarFill = document.getElementById('sonar-bar-fill');
 
-function updateSonarPips() {
-  for (let i = 0; i < SONAR_MAX_AMMO; i++) {
-    const el   = sonarPipEls[i];
-    const fill = el.querySelector('.pip-fill');
-    if (i < sonarAmmo) {
-      // fully charged
-      if (!el.classList.contains('ready')) {
-        el.className = 'sonar-pip ready';
-        fill.style.transform = 'scaleX(1)';
-      }
-    } else if (i === sonarAmmo && sonarAmmo < SONAR_MAX_AMMO) {
-      // currently reloading
-      el.className = 'sonar-pip reloading';
-      fill.style.transform = 'scaleX(' + (sonarReloadTimer / SONAR_RELOAD_TIME).toFixed(3) + ')';
-    } else {
-      // empty, not yet reloading
-      el.className = 'sonar-pip empty';
-      fill.style.transform = 'scaleX(0)';
+function updateSonarBar() {
+  if (sonarCooldown <= 0) {
+    sonarBarFill.style.transform = 'scaleX(1)';
+    if (!sonarBarFill.classList.contains('ready')) {
+      sonarBarFill.className = 'ready';
     }
+  } else {
+    const progress = 1 - sonarCooldown / SONAR_COOLDOWN;
+    sonarBarFill.className = 'charging';
+    sonarBarFill.style.transform = 'scaleX(' + progress.toFixed(3) + ')';
   }
 }
 
@@ -1012,7 +1292,6 @@ function playLaunchChirp() {
     g.gain.setValueAtTime(0.12, ac.currentTime);
     g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.09);
     osc.start(); osc.stop(ac.currentTime + 0.1);
-    alertEnemies();
   } catch (_) {}
 }
 
@@ -1091,11 +1370,8 @@ function beginSonarPulse(origin, outwardNormal) {
 
 function fireSonarBolt() {
   if (playerDead) return;
-  if (sonarAmmo <= 0) return;
-  sonarAmmo--;
-  sonarPipEls[sonarAmmo].className = 'sonar-pip empty';
-  sonarPipEls[sonarAmmo].querySelector('.pip-fill').style.transform = 'scaleX(0)';
-  if (sonarAmmo === SONAR_MAX_AMMO - 1) sonarReloadTimer = 0; // start reload clock
+  if (sonarCooldown > 0) return;
+  sonarCooldown = SONAR_COOLDOWN;
 
   raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
   const dir = raycaster.ray.direction.clone().normalize();
@@ -1201,6 +1477,7 @@ function clearSonarFX() {
 const keys = {};
 let yaw = 0, pitch = 0, pointerLocked = false, gameStarted = false;
 let playerDead = false;
+let playerWon  = false;
 
 document.addEventListener('keydown', e => { keys[e.code] = true;  });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
@@ -1212,7 +1489,7 @@ function _startGame() {
   document.getElementById('gameover').style.display       = 'none';
   document.getElementById('ui').style.display             = '';
   document.getElementById('crosshair').style.display      = '';
-  document.getElementById('sonar-bar-wrap').style.display = '';
+  sonarBarWrap.style.display                               = '';
 }
 
 document.addEventListener('click', () => {
@@ -1231,19 +1508,55 @@ document.addEventListener('pointerlockchange', () => {
   if (pointerLocked && !playerDead) _startGame();
 });
 
+function _doRestart() {
+  resetRun();
+  document.getElementById('gameover').style.display       = 'none';
+  document.getElementById('winscreen').style.display      = 'none';
+  document.getElementById('crosshair').style.display      = '';
+  sonarBarWrap.style.display                               = '';
+  gameStarted = true;
+  const req = document.body.requestPointerLock();
+  if (req && typeof req.catch === 'function') req.catch(() => {});
+}
+
 document.getElementById('restart-btn').addEventListener('click', (e) => {
   e.stopPropagation();
   if (!playerDead) return;
+  _doRestart();
+});
+
+document.getElementById('play-again-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!playerWon) return;
+  _doRestart();
+});
+
+function goToHomeScreen() {
+  clearSonarFX();
+  try { document.exitPointerLock(); } catch (_) {}
+  pointerLocked = false;
+  playerWon  = false;
   playerDead = false;
+  gameStarted = false;
   resetRun();
-  document.getElementById('gameover').style.display = 'none';
-  gameStarted = true;   // keep game running even if pointer lock is unavailable
-  const req = document.body.requestPointerLock();
-  if (req && typeof req.catch === 'function') req.catch(() => {});
+  document.getElementById('winscreen').style.display       = 'none';
+  document.getElementById('gameover').style.display        = 'none';
+  document.getElementById('ui').style.display              = 'none';
+  document.getElementById('crosshair').style.display       = 'none';
+  sonarBarWrap.style.display                                = 'none';
+  const tut = document.getElementById('tutorial');
+  tut.classList.remove('visible', 'fade-out');
+  tut.style.display = 'flex';
+  document.getElementById('overlay').style.display          = 'flex';
+}
+
+document.getElementById('win-exit-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  goToHomeScreen();
 });
 
 document.addEventListener('mousedown', e => {
-  if (playerDead || !gameStarted || e.button !== 0) return;
+  if (playerDead || playerWon || !gameStarted || e.button !== 0) return;
   fireSonarBolt();
 });
 
@@ -1273,32 +1586,41 @@ const CAM_SHELL_MARGIN = 0.48;
 const _sepObs = new THREE.Vector3();
 
 function triggerGameOver() {
-  if (playerDead) return;
+  if (playerDead || playerWon) return;
   playerDead = true;
   clearSonarFX();
-  try {
-    document.exitPointerLock();
-  } catch (_) {}
+  try { document.exitPointerLock(); } catch (_) {}
   pointerLocked = false;
-  document.getElementById('gameover').style.display = 'flex';
+  document.getElementById('gameover').style.display       = 'flex';
   document.getElementById('ui').style.display             = 'none';
-  document.getElementById('crosshair').style.display    = 'none';
-  document.getElementById('sonar-bar-wrap').style.display = 'none';
+  document.getElementById('crosshair').style.display      = 'none';
+  sonarBarWrap.style.display                               = 'none';
+}
+
+function triggerWin() {
+  if (playerWon || playerDead) return;
+  playerWon = true;
+  clearSonarFX();
+  try { document.exitPointerLock(); } catch (_) {}
+  pointerLocked = false;
+  document.getElementById('winscreen').style.display      = 'flex';
+  document.getElementById('ui').style.display             = 'none';
+  document.getElementById('crosshair').style.display      = 'none';
+  sonarBarWrap.style.display                               = 'none';
 }
 
 function resetRun() {
   clearSonarFX();
+  playerDead = false;
+  playerWon  = false;
   player.position.copy(findSafeSpawn());
   player.rotation.set(0, 0, 0);
   yaw = 0;
   pitch = 0;
   flapPhase = 0;
-  sonarAmmo        = SONAR_MAX_AMMO;
-  sonarReloadTimer = 0;
-  updateSonarPips();
+  sonarCooldown = 0;
   Object.keys(keys).forEach((k) => { keys[k] = false; });
   resetHawks();
-  
 }
 
 function resolveObstacleCollisions() {
@@ -1369,7 +1691,8 @@ function updateThirdPersonCamera() {
 }
 
 function updatePlayer(dt) {
-  if (playerDead) return;
+  if (playerDead || playerWon) return;
+
   const fast  = keys['ShiftLeft'] || keys['ShiftRight']; //add this later if gameplay boring
   const speed = 10;
   const sinY  = Math.sin(yaw), cosY = Math.cos(yaw);
@@ -1403,6 +1726,13 @@ function updatePlayer(dt) {
   for (let pass = 0; pass < 4; pass++) {
     constrainPlayerToWallShell(player.position, PLAYER_COLLIDE_R);
     clampPointToFloorCeiling(player.position, PLAYER_COLLIDE_R);
+  }
+
+  // Exit hole win — after constraints so position matches collision; body centre vs rim plane
+  getPlayerBodyCenterWorld(_exitWinPos);
+  if (playerInExitWinVolume(_exitWinPos.x, _exitWinPos.y, _exitWinPos.z)) {
+    triggerWin();
+    return;
   }
 
   player.rotation.order = 'YXZ';
@@ -1446,13 +1776,33 @@ const hawkMat = new THREE.ShaderMaterial({
 // ═══════════════════════════════════════════════════════════════════════
 //  HAWKS — 3D eagle GLTF (one full loader.parse per bird: skinned clones often render blank in r128)
 // ═══════════════════════════════════════════════════════════════════════
-const HAWK_COLLIDE_R = 0.72;
+const HAWK_HIT_R        = 0.55;   // hawk body sphere
+const HAWK_PLAYER_HIT_R = 0.40;   // player body sphere
+const HAWK_WANDER_SPEED    = 3.5;
+const HAWK_ATTACK_SPEED    = 9.0;
+const HAWK_ATTACK_DURATION = 3.5;  // max chase time (close-range hit)
+const HAWK_DETECT_RANGE    = 32;   // units from pulse origin — beyond this, no alert
+const HAWK_PROXIMITY_R     = 7;   // units — hawk always attacks if closer than this
 const _hawks = [];
+
+const _wpTemp = new THREE.Vector3();
+function _pickWanderPoint(out) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    out.set(
+      (Math.random() - 0.5) * 76,
+      (Math.random() - 0.5) * 18,
+      (Math.random() - 0.5) * 76
+    );
+    snapPointIntoCaveShell(out, 1.5);
+    clampPointToFloorCeiling(out, 1.5);
+    return;
+  }
+}
 const _hawkSpawnPositions = (function buildHawkSpawnPositions() {
   const out = [];
   const minFromPlayer = 17;
   const minFromEach = 13;
-  for (let attempt = 0; attempt < 140 && out.length < 3; attempt++) {
+  for (let attempt = 0; attempt < 140 && out.length < 2; attempt++) {
     const hx = (rng() - 0.5) * (CAVE_HALF * 2 - 22);
     const hz = (rng() - 0.5) * (CAVE_HALF * 2 - 22);
     const hy = getFloorY(hx, hz) + 4 + rng() * 4.5;
@@ -1470,7 +1820,7 @@ const _hawkSpawnPositions = (function buildHawkSpawnPositions() {
     if (ok) out.push(v.clone());
   }
   const _push = new THREE.Vector3();
-  while (out.length < 3) {
+  while (out.length < 2) {
     const k = out.length;
     _push.set(Math.cos(k * 2.1) * 24, 4, Math.sin(k * 2.1) * 24).add(player.position);
     snapPointIntoCaveShell(_push, 0.35);
@@ -1503,15 +1853,20 @@ function spawnHawkFromFreshGltf(gltf, initPos) {
     mixer.clipAction(gltf.animations[0]).play();
   }
 
-  _hawks.push({
+  const h = {
     root,
     hawkMount,
+    eagle,
     mixer,
     initPos: initPos.clone(),
-    alerted: false,
-    alertTimer: 0,
-    idleAngle: rng() * Math.PI * 2,
-  });
+    state: 'WANDER',
+    attackTimer: 0,
+    wanderTarget: new THREE.Vector3(),
+    heading: new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize(),
+    currentSpeed: HAWK_WANDER_SPEED,
+  };
+  _pickWanderPoint(h.wanderTarget);
+  _hawks.push(h);
 }
 
 _hawkSpawnPositions.forEach((initPos) => {
@@ -1525,74 +1880,156 @@ _hawkSpawnPositions.forEach((initPos) => {
   );
 });
 
-function alertEnemies() {
-  for (const h of _hawks) {
-    h.alerted    = true;
-    h.alertTimer = 5.0;
+const _hawkDir      = new THREE.Vector3();
+const _hawkBodyPos  = new THREE.Vector3();
+const _playerBodyCenter = new THREE.Vector3();
+const _batHitBox = new THREE.Box3();
+
+/** World-space center of the bat mesh (fair hit target vs player group origin). */
+function getPlayerBodyCenterWorld(out) {
+  batMount.updateMatrixWorld(true);
+  if (batMount.children.length > 0) {
+    _batHitBox.setFromObject(batMount);
+    _batHitBox.getCenter(out);
+  } else {
+    player.localToWorld(out.set(0, 0.35, 0));
   }
 }
 
-const _hawkDir = new THREE.Vector3();
-const HAWK_IDLE_SPEED  = 3.5;   // world units / sec while patrolling
-const HAWK_CHASE_SPEED = 8.0;   // world units / sec while swooping
-const HAWK_IDLE_RADIUS = 7.0;   // orbit radius around spawn
-const HAWK_IDLE_RPM    = 0.45;  // radians / sec orbit rate
-const HAWK_ROT_SMOOTH  = 7.0;   // higher = snappier rotation tracking
-const HAWK_BANK_SCALE  = 0.28;  // how much to roll into turns
+/**
+ * World-space body centre of the hawk.
+ * We use the skeleton ROOT BONE (bone[0]) which is the hip/torso anchor —
+ * always at the physical centre of the bird regardless of wing pose.
+ * Averaging all bones fails because wing/feather bones outnumber body bones
+ * and drag the average far out into the wingtips.
+ */
+function getHawkBodyCenterWorld(h, out) {
+  if (h.eagle) {
+    let found = false;
+    h.eagle.traverse((o) => {
+      if (found || !o.isSkinnedMesh || !o.skeleton) return;
+      const rootBone = o.skeleton.bones[0];
+      if (rootBone) { rootBone.getWorldPosition(out); found = true; }
+    });
+    if (found) return;
+  }
+  out.copy(h.root.position);
+}
+
+const HAWK_ROT_SMOOTH = 7.0;
+const HAWK_BANK_SCALE = 0.28;
 
 function updateHawks(dt) {
+  getPlayerBodyCenterWorld(_playerBodyCenter);
+
   for (const h of _hawks) {
-    let moveX = 0, moveZ = 0;
-    let targetPitch = 0;
-
-    if (h.alerted) {
-      h.alertTimer -= dt;
-      if (h.alertTimer <= 0) h.alerted = false;
-
-      // Swoop straight toward player (full 3-D direction)
-      _hawkDir.subVectors(player.position, h.root.position);
-      const dist = _hawkDir.length();
-      if (dist > 0.1) {
-        _hawkDir.normalize();
-        h.root.position.addScaledVector(_hawkDir, HAWK_CHASE_SPEED * dt);
-        moveX = _hawkDir.x;
-        moveZ = _hawkDir.z;
-        // Pitch = vertical angle toward player
-        const horizLen = Math.sqrt(_hawkDir.x * _hawkDir.x + _hawkDir.z * _hawkDir.z);
-        targetPitch = Math.atan2(_hawkDir.y, Math.max(horizLen, 0.01));
-      }
-    } else {
-      // Idle patrol: smooth circle around spawn point
-      h.idleAngle += HAWK_IDLE_RPM * dt;
-      moveX = -Math.sin(h.idleAngle);
-      moveZ =  Math.cos(h.idleAngle);
-      h.root.position.x += moveX * HAWK_IDLE_SPEED * dt;
-      h.root.position.z += moveZ * HAWK_IDLE_SPEED * dt;
-      // Gentle vertical bob — pitch tracks the vertical velocity
-      h.root.position.y = h.initPos.y + Math.sin(h.idleAngle * 1.6) * 1.4;
-      const vertVel = Math.cos(h.idleAngle * 1.6) * 1.4 * 1.6 * HAWK_IDLE_RPM;
-      targetPitch = Math.atan2(vertVel, HAWK_IDLE_SPEED);
+    // ── Illumination check: pulse ring reaches hawk AND within signal range ──
+    // attackTimer counts DOWN to 0 → return to wander
+    for (const p of activePulses) {
+      getHawkBodyCenterWorld(h, _hawkBodyPos);
+      const distToOrigin = _hawkBodyPos.distanceTo(p.origin);
+      if (distToOrigin > HAWK_DETECT_RANGE) continue;   // signal too weak at this distance
+      if (distToOrigin > p.radius)          continue;   // ring hasn't reached hawk yet
+      // Strength: 1.0 right at the source, approaching 0 at HAWK_DETECT_RANGE
+      const strength  = 1 - distToOrigin / HAWK_DETECT_RANGE;
+      const chaseDur  = HAWK_ATTACK_DURATION * strength;
+      h.state = 'ATTACK';
+      // Only extend the timer — never shorten an ongoing chase with a weaker ping
+      if (chaseDur > h.attackTimer) h.attackTimer = chaseDur;
+      break;
     }
 
-    // ── Yaw: face horizontal movement direction ───────────────────────
+    // ── Proximity trigger: hawk notices the player when close enough ──
+    if (h.state === 'WANDER') {
+      getHawkBodyCenterWorld(h, _hawkBodyPos);
+      const proximityDist = _hawkBodyPos.distanceTo(_playerBodyCenter);
+      if (proximityDist < HAWK_PROXIMITY_R) {
+        h.state = 'ATTACK';
+        // Scale duration by how close — right on top = full duration
+        const strength = 1 - proximityDist / HAWK_PROXIMITY_R;
+        const chaseDur = HAWK_ATTACK_DURATION * (0.5 + 0.5 * strength); // min 50% duration
+        if (chaseDur > h.attackTimer) h.attackTimer = chaseDur;
+      }
+    }
+
+    const TURN_RATE  = 2.2;   // heading lerp speed (higher = snappier turn)
+    const SPEED_RATE = 2.5;   // speed lerp rate (units/s²)
+
+    // ── Resolve state, pick desired heading & target speed ───────────
+    let desiredSpeed = HAWK_WANDER_SPEED;
+    let targetTimeScale = 1.0;
+
+    if (h.state === 'ATTACK') {
+      h.attackTimer -= dt;
+      if (h.attackTimer <= 0) {
+        h.state = 'WANDER';
+        h.attackTimer = 0;
+        _pickWanderPoint(h.wanderTarget);
+      } else {
+        desiredSpeed    = HAWK_ATTACK_SPEED;
+        targetTimeScale = 2.2;
+      }
+    }
+
+    // Compute raw desired direction toward current target.
+    // In ATTACK mode: chase _playerBodyCenter but correct for the hawk's own
+    // body-to-root offset so the hawk body (not its root) intercepts the player.
+    if (h.state === 'ATTACK') {
+      // Aim so hawk's BODY CENTER reaches player's body center, not root-to-root.
+      // direction = playerBodyCenter - hawkBodyCenter
+      getHawkBodyCenterWorld(h, _hawkBodyPos);
+      _hawkDir.subVectors(_playerBodyCenter, _hawkBodyPos);
+    } else {
+      _hawkDir.subVectors(h.wanderTarget, h.root.position);
+    }
+    const distToTarget = _hawkDir.length();
+
+    if (h.state === 'WANDER' && distToTarget < 2.0) {
+      _pickWanderPoint(h.wanderTarget);
+    }
+
+    // ── Lerp heading toward desired direction ─────────────────────────
+    if (distToTarget > 0.1) {
+      _hawkDir.normalize();
+      h.heading.lerp(_hawkDir, Math.min(1, TURN_RATE * dt));
+      if (h.heading.lengthSq() > 0.0001) h.heading.normalize();
+    }
+
+    // ── Lerp speed toward target ──────────────────────────────────────
+    h.currentSpeed += (desiredSpeed - h.currentSpeed) * Math.min(1, SPEED_RATE * dt);
+
+    // ── Move along smoothed heading at smoothed speed ─────────────────
+    h.root.position.addScaledVector(h.heading, h.currentSpeed * dt);
+
+    // ── Lerp wing animation speed ─────────────────────────────────────
+    if (h.mixer) {
+      h.mixer.timeScale += (targetTimeScale - h.mixer.timeScale) * Math.min(1, SPEED_RATE * dt);
+    }
+
+    // ── Yaw: face smoothed heading direction ──────────────────────────
+    const moveX = h.heading.x;
+    const moveZ = h.heading.z;
     if (moveX !== 0 || moveZ !== 0) {
       const targetY = Math.atan2(-moveZ, moveX);
       let diff = targetY - h.root.rotation.y;
       while (diff >  Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       h.root.rotation.y += diff * Math.min(1, HAWK_ROT_SMOOTH * dt);
-      // Bank (roll) into the turn
-      h.root.rotation.z = -diff * HAWK_BANK_SCALE;
+      h.root.rotation.z  = -diff * HAWK_BANK_SCALE;
     }
 
-    // ── Pitch: tilt nose up when climbing, down when diving ──────────
-    // hawkMount is a child of root; for a model facing +X in root-local space,
-    // hawkMount.rotation.z > 0 tilts the nose upward.
+    // ── Pitch: tilt with vertical component of heading ────────────────
+    const horizLen  = Math.sqrt(moveX * moveX + moveZ * moveZ);
+    const targetPitch = Math.atan2(h.heading.y, Math.max(horizLen, 0.01));
     const pitchDiff = targetPitch - h.hawkMount.rotation.z;
     h.hawkMount.rotation.z += pitchDiff * Math.min(1, HAWK_ROT_SMOOTH * dt);
 
-    // Lethal contact
-    if (h.root.position.distanceTo(player.position) < HAWK_COLLIDE_R + PLAYER_COLLIDE_R) {
+    // ── Lethal contact (mesh centers — not root pivots, so yaw/bank don’t skew the hit) ──
+    getHawkBodyCenterWorld(h, _hawkBodyPos);
+    if (
+      _hawkBodyPos.distanceTo(_playerBodyCenter) <
+      HAWK_HIT_R + HAWK_PLAYER_HIT_R
+    ) {
       triggerGameOver();
       return;
     }
@@ -1604,8 +2041,12 @@ function resetHawks() {
     h.root.position.copy(h.initPos);
     h.root.rotation.set(0, 0, 0);
     h.hawkMount.rotation.z = 0;
-    h.alerted    = false;
-    h.alertTimer = 0;
+    h.state        = 'WANDER';
+    h.attackTimer  = 0;
+    h.currentSpeed = HAWK_WANDER_SPEED;
+    h.heading.set(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+    _pickWanderPoint(h.wanderTarget);
+    if (h.mixer) h.mixer.timeScale = 1.0;
   }
 }
 
@@ -1616,31 +2057,19 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  if (gameStarted && !playerDead) updatePlayer(dt);
-  if (gameStarted && !playerDead) updateHawks(dt);
-  updateThirdPersonCamera();
-
+  // Skinning must be current before AABB hit tests on bat / eagles
   if (batMixer) batMixer.update(dt);
   for (const h of _hawks) {
     if (h.mixer) h.mixer.update(dt);
   }
 
-  // Sonar ammo reload — only triggers when fully empty, then refills all at once
-  if (!playerDead && sonarAmmo === 0) {
-    sonarReloadTimer += dt;
-    const progress = Math.min(sonarReloadTimer / SONAR_RELOAD_TIME, 1);
-    for (let i = 0; i < SONAR_MAX_AMMO; i++) {
-      const el   = sonarPipEls[i];
-      const fill = el.querySelector('.pip-fill');
-      el.className = 'sonar-pip reloading';
-      fill.style.transform = 'scaleX(' + progress.toFixed(3) + ')';
-    }
-    if (sonarReloadTimer >= SONAR_RELOAD_TIME) {
-      sonarAmmo = SONAR_MAX_AMMO;
-      sonarReloadTimer = 0;
-      updateSonarPips();
-    }
-  }
+  if (gameStarted && !playerDead && !playerWon) updatePlayer(dt);
+  if (gameStarted && !playerDead && !playerWon) updateHawks(dt);
+  updateThirdPersonCamera();
+
+  // Sonar cooldown
+  if (sonarCooldown > 0) sonarCooldown -= dt;
+  if (!playerDead && !playerWon) updateSonarBar();
 
   if (!playerDead) {
     updateSonarProjectiles(dt);
