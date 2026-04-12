@@ -2,6 +2,10 @@
 // ═══════════════════════════════════════════════════════════════════════
 //  RENDERER + SCENE
 // ═══════════════════════════════════════════════════════════════════════
+
+
+const Pathfinding = window.threePathfinding.Pathfinding;
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -19,8 +23,10 @@ const player = new THREE.Group();
 player.position.set(0, 0, 0);
 scene.add(player);
 
-// Lights for the GLTF bat (cave uses ShaderMaterial and ignores these).
-scene.add(new THREE.HemisphereLight(0x4a6a8a, 0x0a0612, 0.45));
+// Lights for GLTF creatures (MeshStandardMaterial). Cave ShaderMaterials ignore these.
+// Ambient + hemisphere = minimum fill so PBR models are never a black silhouette (tutorial pattern).
+scene.add(new THREE.AmbientLight(0x8899b0, 0.42));
+scene.add(new THREE.HemisphereLight(0x5c7090, 0x121018, 0.58));
 const batKey = new THREE.PointLight(0xc8e8ff, 0.85, 22, 2);
 batKey.position.set(0, 0.4, 0.15);
 player.add(batKey);
@@ -30,31 +36,62 @@ const batMount = new THREE.Group();
 batMount.rotation.y = Math.PI * 0.5;
 player.add(batMount);
 
+
+let navmesh;
+const pathfinding = new Pathfinding();
+const ZONE = 'level1';
+const loader = new THREE.GLTFLoader();
+loader.load('scene.gltf', ({scene}) => {
+    scene.traverse((node) => {
+        if (node.isMesh) navmesh = node;
+    });
+    pathfinding.setZoneData(ZONE, Pathfinding.createZone(navmesh.geometry));
+}, undefined, (e) => {
+    console.error(e);
+});
+
+/** Same PBR + centering + scale for bat, eagles, and any other GLTF creature. */
+function configureGltfCreature(root, maxAxisSize) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.frustumCulled = false;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (let i = 0; i < mats.length; i++) {
+      const mat = mats[i];
+      if (mat && mat.isMeshStandardMaterial) {
+        mat.side = THREE.DoubleSide;
+        mat.envMapIntensity = 0.45;
+      }
+    }
+  });
+  const box = new THREE.Box3().setFromObject(root);
+  const c = new THREE.Vector3();
+  const sz = new THREE.Vector3();
+  box.getCenter(c);
+  box.getSize(sz);
+  const mx = Math.max(sz.x, sz.y, sz.z);
+  if (mx > 0) {
+    const s = maxAxisSize / mx;
+    root.scale.setScalar(s);
+    // Position must account for scale: parent_center = position + scale * geometry_center = 0
+    root.position.set(-c.x * s, -c.y * s, -c.z * s);
+  }
+}
+
+/** Eagle GLTF: scale/center the mesh, then swap every sub-mesh to the sonar material. */
+function configureEagleGltf(root) {
+  configureGltfCreature(root, 2.8);
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material = hawkMat;   // invisible until a sonar pulse illuminates it
+  });
+}
+
 new THREE.GLTFLoader().load(
   'scene.gltf',
   (gltf) => {
     const bat = gltf.scene;
-    bat.traverse((o) => {
-      if (!o.isMesh) return;
-      o.frustumCulled = false;
-      const mats = Array.isArray(o.material) ? o.material : [o.material];
-      for (let i = 0; i < mats.length; i++) {
-        const mat = mats[i];
-        if (mat && mat.isMeshStandardMaterial) {
-          mat.side = THREE.DoubleSide;
-          mat.envMapIntensity = 0.45;
-        }
-      }
-    });
-    const box = new THREE.Box3().setFromObject(bat);
-    const c = new THREE.Vector3();
-    box.getCenter(c);
-    bat.position.sub(c);
-    const box2 = new THREE.Box3().setFromObject(bat);
-    const sz = new THREE.Vector3();
-    box2.getSize(sz);
-    const mx = Math.max(sz.x, sz.y, sz.z);
-    if (mx > 0) bat.scale.setScalar(1.75 / mx);
+    configureGltfCreature(bat, 1.75);
     batMount.add(bat);
     if (gltf.animations && gltf.animations.length) {
       batMixer = new THREE.AnimationMixer(bat);
@@ -436,9 +473,10 @@ function galleryEdge01(x, z) {
 // ── Shared helper: classic drip cylinder ───────────────────────────
 function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
   const tipR = lethal ? 0.015 + rng()*0.03 : 0.03 + rng()*0.09;
+  // Cylinder: radiusTop at +Y, radiusBottom at −Y. Ceiling: wide at top, tip down; floor: wide at bottom.
   const geo  = new THREE.CylinderGeometry(
-    fromCeil ? tipR : baseR,
     fromCeil ? baseR : tipR,
+    fromCeil ? tipR : baseR,
     h, 6
   );
   const m  = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
@@ -459,11 +497,15 @@ function _spawnTite(x, z, fromCeil, h, baseR, lethal) {
 function _spawnCeilingCone(x, z, h, baseR, lethal) {
   const seg = 5 + (rng() * 4) | 0;
   const geo = new THREE.ConeGeometry(baseR, h, seg);
+  // Default cone: tip at +Y, base at −Y — rotate so base meets ceiling and tip points down.
+  geo.rotateX(Math.PI);
   const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
-  m.rotation.x = Math.PI;
   const topY = getCeilY(x, z);
+
   m.position.set(x, topY - h * 0.5, z);
+
   scene.add(m);
+
   const rad = Math.max(0.04, baseR * 0.55);
   obstacleColliders.push({
     type: 'capsule',
@@ -511,7 +553,7 @@ function _spawnCeilingVariety(x, z, lethal) {
   } else if (roll < 0.58) {
     _spawnCeilingCone(x, z, h, base * (1.1 + rng() * 1.4), lethal);
   } else if (roll < 0.78) {
-    const geo = new THREE.CylinderGeometry(base * 0.22, base * 1.05, h, 6);
+    const geo = new THREE.CylinderGeometry(base * 1.05, base * 0.22, h, 6);
     const m = new THREE.Mesh(geo, lethal ? obstacleCaveMat : caveMat);
     const surfY = getCeilY(x, z) - h * 0.5;
     m.position.set(x, surfY, z);
@@ -763,11 +805,13 @@ for (let i = 0; i < 5; i++) {
 // Thin rippled rock sheets that hang from ceiling overhangs.  In real
 // limestone caves these form where water seeps along a sloped surface.
 // DoubleSide so they're visible when flying through or around them.
+
 const curtainMat = new THREE.ShaderMaterial({
   vertexShader: vertShader, fragmentShader: fragShader,
   uniforms: { uPulses: { value: uPulseVec4 }, uCamPos: { value: camera.position } },
   side: THREE.DoubleSide
 });
+
 for (let i = 0; i < 4; i++) {
   const bias = (rng() - 0.5) * 1.65;
   const cx    = Math.max(-CAVE_HALF + 8, Math.min(CAVE_HALF - 8, (rng() - 0.5) * (CAVE_HALF * 2 - 14) + bias * CAVE_HALF * 0.35));
@@ -784,7 +828,7 @@ for (let i = 0; i < 4; i++) {
   const ceilY = getCeilY(cx, cz);
   cm.position.set(cx, ceilY - ch * 0.5, cz);
   cm.rotation.y = cAng;
-  scene.add(cm);
+  // scene.add(cm);
   // Curtains are passable — no collider
 }
 
@@ -945,6 +989,7 @@ function playLaunchChirp() {
     g.gain.setValueAtTime(0.12, ac.currentTime);
     g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.09);
     osc.start(); osc.stop(ac.currentTime + 0.1);
+    alertEnemies();
   } catch (_) {}
 }
 
@@ -1228,6 +1273,8 @@ function resetRun() {
   sonarCharge = 1;
   sonarFill.style.width = '100%';
   Object.keys(keys).forEach((k) => { keys[k] = false; });
+  resetHawks();
+  
 }
 
 function resolveObstacleCollisions() {
@@ -1340,6 +1387,205 @@ function updatePlayer(dt) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  HAWK SONAR MATERIAL
+//  Same blue sonar grid as the cave, but with skinning so it deforms with
+//  the eagle skeleton.  Hawks are invisible until a pulse sweeps over them.
+// ═══════════════════════════════════════════════════════════════════════
+const hawkVertShader = /* glsl */`
+  #include <common>
+  #include <skinning_pars_vertex>
+
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec3 transformed = vec3(position);
+    #include <skinbase_vertex>
+    #include <skinning_vertex>
+
+    vec4 wp    = modelMatrix * vec4(transformed, 1.0);
+    vWorldPos  = wp.xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+  }
+`;
+
+const hawkMat = new THREE.ShaderMaterial({
+  vertexShader:   hawkVertShader,
+  fragmentShader: fragShaderObstacle, // red grid + pulse — matches lethal obstacles
+  uniforms: {
+    uPulses: { value: uPulseVec4 },  // shared with cave — same pulse data
+    uCamPos: { value: camera.position }
+  },
+  skinning: true,
+  side: THREE.DoubleSide,
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HAWKS — 3D eagle GLTF (one full loader.parse per bird: skinned clones often render blank in r128)
+// ═══════════════════════════════════════════════════════════════════════
+const HAWK_COLLIDE_R = 0.72;
+const _hawks = [];
+const _hawkSpawnPositions = (function buildHawkSpawnPositions() {
+  const out = [];
+  const minFromPlayer = 17;
+  const minFromEach = 13;
+  for (let attempt = 0; attempt < 140 && out.length < 3; attempt++) {
+    const hx = (rng() - 0.5) * (CAVE_HALF * 2 - 22);
+    const hz = (rng() - 0.5) * (CAVE_HALF * 2 - 22);
+    const hy = getFloorY(hx, hz) + 4 + rng() * 4.5;
+    const v = new THREE.Vector3(hx, hy, hz);
+    snapPointIntoCaveShell(v, 0.35);
+    clampPointToFloorCeiling(v, 0.35);
+    if (v.distanceTo(player.position) < minFromPlayer) continue;
+    let ok = true;
+    for (let j = 0; j < out.length; j++) {
+      if (out[j].distanceTo(v) < minFromEach) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) out.push(v.clone());
+  }
+  const _push = new THREE.Vector3();
+  while (out.length < 3) {
+    const k = out.length;
+    _push.set(Math.cos(k * 2.1) * 24, 4, Math.sin(k * 2.1) * 24).add(player.position);
+    snapPointIntoCaveShell(_push, 0.35);
+    clampPointToFloorCeiling(_push, 0.35);
+    out.push(_push.clone());
+  }
+  return out;
+})();
+
+function spawnHawkFromFreshGltf(gltf, initPos) {
+  const root = new THREE.Group();
+  root.position.copy(initPos);
+  root.frustumCulled = false;
+  const hawkMount = new THREE.Group();
+  root.add(hawkMount);
+  const eagle = gltf.scene;
+  configureEagleGltf(eagle);
+  hawkMount.add(eagle);
+  scene.add(root);
+  eagle.traverse((o) => {
+    if (o.isSkinnedMesh && o.skeleton) {
+      o.updateMatrixWorld(true);
+    }
+  });
+  root.updateMatrixWorld(true);
+
+  let mixer = null;
+  if (gltf.animations && gltf.animations.length) {
+    mixer = new THREE.AnimationMixer(eagle);
+    mixer.clipAction(gltf.animations[0]).play();
+  }
+
+  _hawks.push({
+    root,
+    hawkMount,
+    mixer,
+    initPos: initPos.clone(),
+    alerted: false,
+    alertTimer: 0,
+    idleAngle: rng() * Math.PI * 2,
+  });
+}
+
+_hawkSpawnPositions.forEach((initPos) => {
+  new THREE.GLTFLoader().load(
+    'eagle.gltf',
+    (gltf) => {
+      spawnHawkFromFreshGltf(gltf, initPos);
+    },
+    undefined,
+    (err) => console.error('eagle.gltf load error:', err)
+  );
+});
+
+function alertEnemies() {
+  for (const h of _hawks) {
+    h.alerted    = true;
+    h.alertTimer = 5.0;
+  }
+}
+
+const _hawkDir = new THREE.Vector3();
+const HAWK_IDLE_SPEED  = 3.5;   // world units / sec while patrolling
+const HAWK_CHASE_SPEED = 8.0;   // world units / sec while swooping
+const HAWK_IDLE_RADIUS = 7.0;   // orbit radius around spawn
+const HAWK_IDLE_RPM    = 0.45;  // radians / sec orbit rate
+const HAWK_ROT_SMOOTH  = 7.0;   // higher = snappier rotation tracking
+const HAWK_BANK_SCALE  = 0.28;  // how much to roll into turns
+
+function updateHawks(dt) {
+  for (const h of _hawks) {
+    let moveX = 0, moveZ = 0;
+    let targetPitch = 0;
+
+    if (h.alerted) {
+      h.alertTimer -= dt;
+      if (h.alertTimer <= 0) h.alerted = false;
+
+      // Swoop straight toward player (full 3-D direction)
+      _hawkDir.subVectors(player.position, h.root.position);
+      const dist = _hawkDir.length();
+      if (dist > 0.1) {
+        _hawkDir.normalize();
+        h.root.position.addScaledVector(_hawkDir, HAWK_CHASE_SPEED * dt);
+        moveX = _hawkDir.x;
+        moveZ = _hawkDir.z;
+        // Pitch = vertical angle toward player
+        const horizLen = Math.sqrt(_hawkDir.x * _hawkDir.x + _hawkDir.z * _hawkDir.z);
+        targetPitch = Math.atan2(_hawkDir.y, Math.max(horizLen, 0.01));
+      }
+    } else {
+      // Idle patrol: smooth circle around spawn point
+      h.idleAngle += HAWK_IDLE_RPM * dt;
+      moveX = -Math.sin(h.idleAngle);
+      moveZ =  Math.cos(h.idleAngle);
+      h.root.position.x += moveX * HAWK_IDLE_SPEED * dt;
+      h.root.position.z += moveZ * HAWK_IDLE_SPEED * dt;
+      // Gentle vertical bob — pitch tracks the vertical velocity
+      h.root.position.y = h.initPos.y + Math.sin(h.idleAngle * 1.6) * 1.4;
+      const vertVel = Math.cos(h.idleAngle * 1.6) * 1.4 * 1.6 * HAWK_IDLE_RPM;
+      targetPitch = Math.atan2(vertVel, HAWK_IDLE_SPEED);
+    }
+
+    // ── Yaw: face horizontal movement direction ───────────────────────
+    if (moveX !== 0 || moveZ !== 0) {
+      const targetY = Math.atan2(-moveZ, moveX);
+      let diff = targetY - h.root.rotation.y;
+      while (diff >  Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      h.root.rotation.y += diff * Math.min(1, HAWK_ROT_SMOOTH * dt);
+      // Bank (roll) into the turn
+      h.root.rotation.z = -diff * HAWK_BANK_SCALE;
+    }
+
+    // ── Pitch: tilt nose up when climbing, down when diving ──────────
+    // hawkMount is a child of root; for a model facing +X in root-local space,
+    // hawkMount.rotation.z > 0 tilts the nose upward.
+    const pitchDiff = targetPitch - h.hawkMount.rotation.z;
+    h.hawkMount.rotation.z += pitchDiff * Math.min(1, HAWK_ROT_SMOOTH * dt);
+
+    // Lethal contact
+    if (h.root.position.distanceTo(player.position) < HAWK_COLLIDE_R + PLAYER_COLLIDE_R) {
+      triggerGameOver();
+      return;
+    }
+  }
+}
+
+function resetHawks() {
+  for (const h of _hawks) {
+    h.root.position.copy(h.initPos);
+    h.root.rotation.set(0, 0, 0);
+    h.hawkMount.rotation.z = 0;
+    h.alerted    = false;
+    h.alertTimer = 0;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  ANIMATE LOOP
 // ═══════════════════════════════════════════════════════════════════════
 function animate() {
@@ -1347,9 +1593,13 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   if (gameStarted && !playerDead) updatePlayer(dt);
+  if (gameStarted && !playerDead) updateHawks(dt);
   updateThirdPersonCamera();
 
   if (batMixer) batMixer.update(dt);
+  for (const h of _hawks) {
+    if (h.mixer) h.mixer.update(dt);
+  }
 
   // Sonar charge bar
   if (!playerDead) {

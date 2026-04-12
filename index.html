@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Bat — Echolocation</title>
+<title>Bat</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -27,11 +27,11 @@
 
 <div id="gameover" style="display:none" aria-live="polite">
   <h2>GAME OVER</h2>
-  <p class="reason">You struck a lethal red obstacle.</p>
+  <p class="reason">You struck a lethal obstacle.</p>
   <button type="button" id="restart-btn">Play again</button>
 </div>
 
-<p id="model-credit">Bat 3D model: Dzimge (CC-BY-4.0) · Sketchfab</p>
+<p id="model-credit">Bat 3D: Dzimge (CC-BY-4.0) · Sketchfab · Hawks: 3D eagle GLTF (same setup as bat)</p>
 
 <div id="ui" style="display:none"></div>
 <div id="crosshair" style="display:none"></div>
@@ -46,7 +46,9 @@
 <div id="flash"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three-pathfinding@1.3.0/dist/three-pathfinding.umd.js"></script>
 <script src="script.js"></script>
 
 </body>
