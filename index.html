@@ -26,7 +26,14 @@
     },1200);
   },3800);
 ">
-  <h1>BatSense</h1>
+  <div class="overlay-screen-sonar" aria-hidden="true">
+    <div class="overlay-screen-sweep"><div class="overlay-screen-grid"></div></div>
+    <div class="overlay-screen-sweep overlay-screen-sweep-2"><div class="overlay-screen-grid"></div></div>
+    <div class="overlay-screen-sweep overlay-screen-sweep-3"><div class="overlay-screen-grid"></div></div>
+  </div>
+  <div class="overlay-title-cluster">
+    <h1>BatSense</h1>
+  </div>
   <p class="go">[ CLICK ANYWHERE TO BEGIN ]</p>
 </div>
 
@@ -109,7 +116,7 @@
 
 <div id="gameover" style="display:none" aria-live="polite">
   <h2>GAME OVER</h2>
-  <p class="reason">You struck a lethal obstacle.</p>
+  <p class="reason" id="gameover-reason">You struck a lethal obstacle.</p>
   <button type="button" id="restart-btn">Try again</button>
 </div>
 

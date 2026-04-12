@@ -370,7 +370,7 @@ const CAVE_HALF = 56;
 const CAVE_H    = 14;
 
 // Exit hole — radius/depth are fixed; center + orientation are chosen at runtime
-const EXIT_RADIUS =   4.0;
+const EXIT_RADIUS =   2.85;
 const EXIT_DEPTH  =  12;
 let exitCenter    = new THREE.Vector3(9999, 9999, 9999);  // set when geometry is built
 let exitIsFloor   = false;   // true → floor hole, false → wall / ceiling hole
@@ -783,8 +783,8 @@ for (let di = 0; di < 7; di++) {
     }
   }
 
-  // 0–1 column per zone (massive verticals, not many small posts)
-  const colCount = Math.floor(rng() * 1.35);
+  // 1–2 floor-to-ceiling columns per zone (safe pillars — caveMat, lethal false)
+  const colCount = 1 + Math.floor(rng() * 2);
   for (let ci = 0; ci < colCount; ci++) {
     const cx    = Math.max(-CAVE_HALF+3, Math.min(CAVE_HALF-3, zx + (rng()-0.5)*spread*0.55));
     const cz    = Math.max(-CAVE_HALF+3, Math.min(CAVE_HALF-3, zz + (rng()-0.5)*spread*0.55));
@@ -912,8 +912,8 @@ for (let i = 0; i < 18; i++) {
   }
 }
 
-// ── LARGE PILLARS — a few anchors that tie floor to ceiling (rest of room stays open). ──
-for (let i = 0; i < 5; i++) {
+// ── LARGE PILLARS — floor-to-ceiling anchors (caveMat, non-lethal); satellites add broken rim detail. ──
+for (let i = 0; i < 11; i++) {
   const x = (rng()-0.5) * (CAVE_HALF*2 - 16);
   const z = (rng()-0.5) * (CAVE_HALF*2 - 16);
   if (Math.abs(x) < 10 && Math.abs(z) < 10) { i--; continue; }
@@ -935,7 +935,7 @@ for (let i = 0; i < 5; i++) {
     radius: baseR * 0.88, lethal: false
   });
 
-  const satCount = 1 + Math.floor(rng() * 3);
+  const satCount = 2 + Math.floor(rng() * 3);
   for (let k = 0; k < satCount; k++) {
     const ang  = (k / satCount) * Math.PI * 2 + rng() * 0.9;
     const dist = baseR * 1.15 + rng() * 2.8;
@@ -1594,12 +1594,19 @@ const CAM_SHELL_MARGIN = 0.48;
 
 const _sepObs = new THREE.Vector3();
 
-function triggerGameOver() {
+function triggerGameOver(deathCause) {
   if (playerDead || playerWon) return;
   playerDead = true;
   clearSonarFX();
   try { document.exitPointerLock(); } catch (_) {}
   pointerLocked = false;
+  const reasonEl = document.getElementById('gameover-reason');
+  if (reasonEl) {
+    reasonEl.textContent =
+      deathCause === 'hawk'
+        ? 'A hawk caught you in the dark.'
+        : 'You struck a lethal obstacle.';
+  }
   document.getElementById('gameover').style.display       = 'flex';
   document.getElementById('ui').style.display             = 'none';
   document.getElementById('crosshair').style.display      = 'none';
@@ -1641,7 +1648,7 @@ function resolveObstacleCollisions() {
     if (!c.lethal) continue;
     const depth = playerObstacleOverlapDepth(p, c, pr);
     if (depth > LETHAL_OVERLAP_EPS) {
-      triggerGameOver();
+      triggerGameOver('obstacle');
       return;
     }
   }
@@ -2039,7 +2046,7 @@ function updateHawks(dt) {
       _hawkBodyPos.distanceTo(_playerBodyCenter) <
       HAWK_HIT_R + HAWK_PLAYER_HIT_R
     ) {
-      triggerGameOver();
+      triggerGameOver('hawk');
       return;
     }
   }
